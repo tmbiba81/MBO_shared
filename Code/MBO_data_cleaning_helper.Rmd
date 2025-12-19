@@ -1,0 +1,631 @@
+---
+title: "MBO_data_cleaning_helper"
+author: "Thomas Biba"
+date: '2023-06-01'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load cleaning Functions
+
+Function to organize data and compute accuracy 
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# function to organzie block data
+# arg 1 raw data, arg 2 = num blocks
+orgBlocks <- function(subdat_i, nblocks = 8){
+    # for testing
+    #subdat_i = subDat
+    #View(subdat_i)
+    #unique(subdat_i$blockcode)
+    #nblocks = 8
+    # the actual function
+    for (i in 1:nblocks){
+      #i = 1
+      # ------- for encoding ---------
+      ed_i = filter(subdat_i, blockcode == paste("B_Enc_r",i,sep=""))
+      #ed_i[1:56,]$picture.P_Enc_r1.currentitem
+      #ed_i[56:112,]$picture.P_Enc_r1.currentitem
+        #View(ed_i)
+        # check if repeated data - if so select late data
+        id_tri = length(unique(ed_i$trialnum))
+        if (length(ed_i[,1]) > id_tri){
+          nReps = length(ed_i[,1])/id_tri
+          ed_i = ed_i[(id_tri*(nReps-1)+1):length(ed_i[,1]),]  # select only the first block worth of data - not the repeated block
+          #ed_i = ed_i[1:id_tri,]
+          repDat = TRUE
+          assign(paste("repDat_enc",i,sep="_"),repDat)
+        } else if (length(ed_i[,1]) == id_tri){
+          repDat = FALSE
+          assign(paste("repDat_enc",i,sep="_"),repDat)
+        }
+      # select the relevant colums
+      ed_i_s = ed_i[c("group", "subject", "blockcode", "trialnum", "display.refreshrate", paste("picture.col_fix_r",i,".currentitem",sep=""),
+               paste("picture.P_Enc_r",i,".currentitem",sep=""), paste("SOA_r",i,sep=""), paste("SOA_FR_r",i,sep=""), 
+               paste("picture.col_fix_r",i,".stimulusonset",sep=""), "picture.black_fix.stimulusonset", 
+               paste("picture.P_Enc_r",i,".stimulusonset",sep=""), paste("ITI_r",i,sep=""), "response", "latency")]
+      # rename the columns
+      colnames(ed_i_s) <- c("group", "subject", "blockcode", "trialnum", "ref_rate", "fix_col", 
+                            "stim_name", "SOA", "SOA_FR", 
+                            "cue_on", "black_on", 
+                            "pic_on", "ITI_i", "response", "latency")
+      if (i == 1){AllEnc_i = ed_i_s} else {AllEnc_i = rbind(AllEnc_i,ed_i_s)}
+      
+      # ------- for retrieval ---------
+      rd_i = filter(subdat_i, blockcode == paste("B_Ret_r",i,sep=""))
+      # check if there is repeated retrieval data
+        id_tri = length(unique(rd_i$trialnum))
+        if (length(rd_i[,1]) > id_tri){
+          nReps = length(rd_i[,1])/id_tri
+          rd_i = rd_i[(id_tri*(nReps-1)+1):length(rd_i[,1]),]
+          #rd_i = rd_i[1:id_tri,]  # select only the first block worth of data - not the repeated block
+          repDat = TRUE
+          assign(paste("repDat_ret",i,sep="_"),repDat)
+        } else if (length(rd_i[,1]) == id_tri){
+          repDat = FALSE
+          assign(paste("repDat_ret",i,sep="_"),repDat)
+        }
+      # select the correct columns
+      rd_i_s = rd_i[c("group", "subject", "blockcode", "trialnum", "display.refreshrate", paste("picture.P_Ret_r",i,".currentitem",sep=""), "response", "latency")]
+      # rename the columns
+      colnames(rd_i_s) <- c("group", "subject", "blockcode", "trialnum", "ref_rate", "stim_name", "response", "latency")
+      if (i == 1){AllRet_i = rd_i_s} else {AllRet_i = rbind(AllRet_i,rd_i_s)}
+    }
+  # compute how many repeated blocks there are
+  tr_vec = c(repDat_enc_1,repDat_ret_1,repDat_enc_2,repDat_ret_2,repDat_enc_3,repDat_ret_3,repDat_enc_4,repDat_ret_4,
+             repDat_enc_5,repDat_ret_5,repDat_enc_6,repDat_ret_6,repDat_enc_7,repDat_ret_7,repDat_enc_8,repDat_ret_8)
+  boolRep = any(tr_vec == TRUE)
+  if (boolRep == T){
+    warning("There is repeated data - most recent complete data was selected")
+  }
+  # return the cleaned data
+  cleanDatL = list(AllEnc_i,AllRet_i,boolRep) #,numRepB)
+  return(cleanDatL)
+}
+#length(unique(AllEnc_i$stim_name))
+# function to bind stimulus norming data
+bindStimNorm <- function(orgData_i, stimDat){ # use left join
+  # for testing
+  #orgData_i = orgData; stimDat = stimList
+  # actual code
+  encOrg = orgData_i[[1]]
+  for (i in 1:length(encOrg[,1])){
+    #i = 1
+    newEnc = cbind(stimDat[which(stimDat$stimulus == encOrg$stim_name[i]),],filter(encOrg, stim_name == encOrg$stim_name[i]))
+    if (i == 1){allNewEnc = newEnc} else {allNewEnc = rbind(allNewEnc,newEnc)}
+  }
+  if (any(is.na(match(allNewEnc$stimulus,allNewEnc$stim_name))) == T){
+    warning("Stimulus norming names do not match stimulus names from experiment for encoding")
+  }
+  retOrg = orgData_i[[2]]
+  for (i in 1:length(retOrg[,1])){
+    #i = 1
+    newRet = cbind(stimDat[which(stimDat$stimulus == retOrg$stim_name[i]),],filter(retOrg, stim_name == retOrg$stim_name[i]))
+    if (i == 1){allNewRet = newRet} else {allNewRet = rbind(allNewRet,newRet)}
+  }
+  if (any(is.na(match(allNewRet$stimulus,allNewRet$stim_name))) == T){
+    warning("Stimulus norming names do not match stimulus names from experiment for encoding")
+  }
+  # add column if repeated data
+  allNewEnc$repDat = orgData_i[[3]]
+  allNewRet$repDat = orgData_i[[3]]
+  return(list(allNewEnc,allNewRet))
+}
+
+# Function to get correct SOA info
+getCorSOA <- function(inEnc, soaInc = 1000/30, sf = 1000/60, soaWind = c(200,1100), cueDur = 100){
+  # for testing
+  #inEnc = orgData_wn[[1]];soaInc = 1000/30; sf = 1000/60; cueDur = 100; soaWind = c(200,1100)
+  # Actual code
+  #soaInc = round(soaInc,2)
+  inEnc$measSOA <- inEnc$pic_on-inEnc$cue_on
+  inEnc$idealSOA <- inEnc$SOA+cueDur
+  inEnc$SOAdev <- inEnc$idealSOA-inEnc$measSOA
+  inEnc$delayDev <- inEnc$SOA-(inEnc$pic_on-inEnc$black_on)
+  soas = round(sort(unique(inEnc$idealSOA)),2)
+  # Plots
+  inEnc$SOAcorr <- round(ifelse(abs(inEnc$SOAdev) > sf, inEnc$idealSOA+round(inEnc$SOAdev/soaInc)*soaInc,inEnc$idealSOA),2)
+  inEnc$idealSOA <- round(inEnc$idealSOA,2) # round ideal SOA
+  # Label them NA if out of bounds
+  inEnc$SOAcorr_ct <- ifelse(c(inEnc$SOAcorr < soaWind[1] | inEnc$SOAcorr > soaWind[2]), NA, inEnc$SOAcorr)
+  # add warnings
+  if (any(which(c(abs(inEnc$SOAdev) > sf) == T) != which(inEnc$SOAcorr != inEnc$idealSOA))){ # number deviant = number re-assigned?
+    warning("Wrong number of SOAs re-labled")
+  }
+  if (any(inEnc$SOAcorr %in% soas) == F){ # new SOA's in increments of 33 ms?
+    warning("SOAs not correctly re-assigned - (i.e. to another realistic SOA value)")
+  }
+  if (length(sort(unique(na.omit(inEnc$SOAcorr_ct)))) != length(soas)){ # right number of SOA's?
+    warning("Incorrect number of SOA's after re-assignment")
+  }
+  if (length(which(is.na(inEnc$SOAcorr_ct) == T))/length(inEnc$SOAcorr) > .05){ # ?
+    warning("More than 5% of the new SOA's are out of range")
+  }
+  # checking
+  reAssCheck = data.frame(delayDev=inEnc$delayDev[which(is.na(match(inEnc$SOAcorr,inEnc$idealSOA)) == T)],
+             SOAdev=inEnc$SOAdev[which(is.na(match(inEnc$SOAcorr,inEnc$idealSOA)) == T)],
+             SOAcorr=inEnc$SOAcorr[which(is.na(match(inEnc$SOAcorr,inEnc$idealSOA)) == T)],
+             idealSOA=inEnc$idealSOA[which(is.na(match(inEnc$SOAcorr,inEnc$idealSOA)) == T)],
+             measSOA=inEnc$measSOA[which(is.na(match(inEnc$SOAcorr,inEnc$idealSOA)) == T)])
+  #View(reAssCheck)
+  return(list(inEnc,reAssCheck))
+}
+
+# get relevant encoding data (code switch + stay) and populate to retrieval dataframe
+orgEncRet <- function(inEnc, inRet){
+  # for testing
+  #inEnc = orgEnc_corSOA[[1]]; inRet = orgData_wn[[2]]
+  # Actual code
+  # populate encoding info
+  inEnc$Task <- ifelse(inEnc$fix_col == "aa_blue_fix.png","InOut","Size")      #  Relabel task states for each trial
+  inEnc$SwSt <- ifelse(c(inEnc$Task==lag(inEnc$Task)) == T, "Stay","Switch")   # Label switch and stay trials
+  inEnc$SwSt[1] <- "Switch"  # lable first trial as switch
+  # migrate info to retrieval data frame
+  relEnc = inEnc %>% select(stim_name,Task,SwSt,trialnum,measSOA,idealSOA,SOAdev,delayDev,SOAcorr,SOAcorr_ct) %>% 
+    rename(encTrialnum = trialnum)
+  #length(colnames(relEnc)) == unique(length(colnames(relEnc)))
+  # redundant column warnings
+  if (length(colnames(relEnc)) != unique(length(colnames(relEnc)))){warning("Duplicate Columns in encoding data frame")}
+  # bind output data
+  outRet = left_join(inRet,relEnc, by = "stim_name")
+  # Some checks on this operation
+  if (length(colnames(outRet)) != unique(length(colnames(outRet)))){warning("Duplicate Columns in retrieval data frame")}
+  if (any(na.omit(outRet$stimulus==lag(outRet$stimulus)))){warning("Repeated stimulus names (in a row)")}
+  if (any(na.omit(outRet$stimulus==lag(outRet$stimulus)))){warning("Repeated trial numbers (in a row)")}
+  return(list(inEnc,outRet))
+}
+
+# Function to compute accuracy for classificaiton and memory
+# Inquisit key scan codes <https://www.millisecond.com/support/docs/current/html/language/scancodes.htm>
+#   Indoor (‘q’ = 16)  ---- Outdoor (‘w’ = 17)                    Small (‘o’ = 24) ----- Big (‘p’ = 25)
+#  outdoors_score < .5    outdoors_score > .5                  shoebox_score > .5      shoebox_score < .5
+#    New (‘a’ = 30)   ----   Old (‘s’ = 31)                Indoor/Outdoor (‘k’ = 37)  --  Size (‘l’ = 38)
+#                                                                  
+compACC <- function(inEnc, inRet){
+  # For testing
+  #inEnc = ERpreped[[1]]; inRet = ERpreped[[2]]
+  # Actual code
+  # Accuracy for classification
+  inEnc$class_resp <- recode(inEnc$response, `16` = "In", `17` = "Out", `24` = "Small", `25` = "Big", `0` = "nr")
+  inEnc$TScor_resp <- ifelse(inEnc$Task == "InOut",ifelse(inEnc$score_outdoors < .5,"In","Out"),ifelse(inEnc$score_shoebox < .5,"Big","Small"))
+  inEnc$IOcor_resp <- ifelse(inEnc$score_shoebox < .5,"Big","Small")
+  inEnc$SZcor_resp <- ifelse(inEnc$score_outdoors < .5,"In","Out")
+  inEnc$class_TS_hit <- ifelse(inEnc$class_resp == inEnc$TScor_resp, 1,0)                 # Class hit = Correct task state and category
+  inEnc$task_hit <- ifelse(inEnc$Task == "InOut" & inEnc$class_resp %in% c("In","Out"),1,
+                           ifelse(inEnc$Task == "Size" & inEnc$class_resp %in% c("Big","Small"),1,0))             
+  inEnc$task_fa <- ifelse(inEnc$Task == "InOut" & inEnc$class_resp %in% c("Big","Small"),1,
+                           ifelse(inEnc$Task == "Size" & inEnc$class_resp %in% c("In","Out"),1,0))    
+  inEnc$class_cor <- ifelse(inEnc$class_resp == inEnc$IOcor_resp | inEnc$class_resp == inEnc$SZcor_resp,1,0)
+  # Accuracy for memory
+  inRet$item_cor <- ifelse(is.na(inRet$Task) == F, "Old","New")
+  inRet$ret_resp <- recode(inRet$response, `30` = "New", `31` = "Old", `37` = "InOut", `38` = "Size", `0` = "nr")
+  inRet$source_resp <- ifelse(inRet$ret_resp %in% c("InOut","Size"), 1,0)     
+  inRet$asso_hit <- ifelse(inRet$Task == inRet$ret_resp, 1,0)                        # associative memory hit
+  inRet$asso_fa <- ifelse(is.na(inRet$Task) == F, 
+                          ifelse(inRet$source_resp&(inRet$Task != inRet$ret_resp),1,0),NA)      # & = * (for future Thomas)
+  inRet$item_hit <- ifelse(inRet$ret_resp == "Old" & inRet$item_cor == "Old", 1,
+                           ifelse(inRet$ret_resp == "InOut" & inRet$item_cor == "Old", 1,
+                                  ifelse(inRet$ret_resp == "Size" & inRet$item_cor == "Old", 1,0))) 
+  inRet$item_fa <- ifelse(inRet$ret_resp == "Old" & inRet$item_cor == "New",1,
+                          ifelse(inRet$ret_resp == "InOut" & inRet$item_cor == "New",1,
+                                 ifelse(inRet$ret_resp == "Size" & inRet$item_cor == "New",1,0)))
+  inRet$item_cr <- ifelse(inRet$ret_resp == "New" & inRet$item_cor == "New",1,0)
+  inRet$item_miss <- ifelse(inRet$ret_resp == "New" & inRet$item_cor == "Old",1,ifelse(inRet$ret_resp == "nr",1,0))
+  inRet$itemOnly_hit <- ifelse(inRet$ret_resp == "Old" & inRet$item_cor == "Old", 1,0)
+  # check responses
+  # respCheck_enc = select(inEnc, stimulus, score_outdoors, score_shoebox,Task, response, class_resp, TScor_resp, IOcor_resp, SZcor_resp, class_hit, task_hit, task_fa, class_cor)
+  #respCheck_ret = select(inRet, stimulus, response, ret_resp, Task, asso_hit, asso_fa, item_cor, item_hit, item_fa, item_cr, item_miss, itemOnly_hit)
+  # specify warnings to check for issues
+  if (any(rowSums(select(inRet,asso_hit,asso_fa,item_fa,item_cr,item_miss), na.rm=T) > 1)){ # check for redudant coding overall
+    warning("Associative and/or item memory not coded correctly")
+  }
+  if (any(rowSums(select(inRet,source_resp,asso_hit,asso_fa), na.rm=T) > 2)){      # check for incorrect coding of source resps
+    warning("Source responses not coded correctly")
+  }
+  if (any(rowSums(select(inRet,item_hit,item_fa,item_cr,item_miss), na.rm=T) > 1)){ # check for incorrect coding of item memory
+    warning("Item memory not coded correctly")
+  }
+  if (any(rowSums(select(inRet,asso_hit,asso_fa,itemOnly_hit), na.rm=T) > 1)){ # check for incorrect coding of item memory
+    warning("Associative and Item only memory not coded correctly")
+  }
+  return(list(inEnc,inRet))
+}
+
+# function to bind questionaaire data
+bindQuesInf <- function(inEnc, inRet, inQues, colsurg){
+  # for testing
+  #inEnc = ERcorCode[[1]]; inRet = ERcorCode[[2]]; inQues = MBO_surv; colsurg = colnames(MBO_surv)
+  # actual code
+  ques = filter(inQues, subject == unique(inEnc$subject))
+  if (length(ques[,1]) == 0){                                # if no questionaire data make blank df with colnames
+    ques = data.frame(matrix(nrow = 1, ncol = length(ques)))
+    colnames(ques) <- colsurg
+  } 
+  encComb = cbind(inEnc,ques)
+  retComb = cbind(inRet,ques)
+  return(list(encComb,retComb))
+}
+
+# wrapper function to run all steps
+datCLWrap <- function(BigSubDat, survDat, stimList_in, soaInc = 1000/30, sf = 1000/60, 
+                                 soaWind = c(200,1100), cueDur = 100){
+  # for testing
+  #BigSubDat = MBO_dat; survDat = MBO_surv; stimList_in = stimList;soaInc = 1000/30;sf = 1000/60; soaWind = c(200,1100); cueDur = 100
+  # loop through subjects
+  subs = unique(BigSubDat$subject) #[1:15]
+  fc = 0
+  for (subi in subs){
+    #subi = subs[10] # for testing
+    subDat <- filter(BigSubDat, subject == subi)
+    if (length(subDat[,1]) >= 1184){
+      fc = fc + 1
+      orgData <- orgBlocks(subDat, nblocks = 8)                                   # organize columns of encoding blocks
+      orgData_wn <- bindStimNorm(orgData, stimList_in)                               # bind stimulus norming info
+      orgEnc_corSOA <- getCorSOA(orgData_wn[[1]], soaInc = soaInc, sf = sf, 
+                                 soaWind = soaWind, cueDur = cueDur) # correct deviant SOA's
+      ERpreped <- orgEncRet(orgEnc_corSOA[[1]], orgData_wn[[2]])
+      ERcorCode <- compACC(ERpreped[[1]], ERpreped[[2]])
+      ERcorCode_wq <- bindQuesInf(ERcorCode[[1]], ERcorCode[[2]], survDat, colnames(survDat))
+      # extract encoding and retreival data frames
+      AllEnc <- as.data.frame(ERcorCode_wq[[1]])
+      AllRet <- as.data.frame(ERcorCode_wq[[2]]) 
+      # if someone quits inquisit change that trial to a non-response
+      if (any(AllEnc$response == "Ctrl+'Q'") | any(AllRet$response == "Ctrl+'Q'")){
+        AllEnc$response[which(AllEnc$response == "Ctrl+'Q'")] <- "0"
+        AllRet$response[which(AllRet$response == "Ctrl+'Q'")] <- "0"
+      }
+    if (fc == 1){
+      AllSubEnc <- AllEnc
+      AllSubRet <- AllRet
+    } else {
+      AllSubEnc <- rbind(AllSubEnc,AllEnc)
+      AllSubRet <- rbind(AllSubRet,AllRet)
+    }
+    print(paste(fc,length(subDat[,1]),subi,sep="_"))
+    }
+  }
+  # remove duplicate column names
+  AllSubEnc = AllSubEnc[, !duplicated(colnames(AllSubEnc))]
+  AllSubRet = AllSubRet[, !duplicated(colnames(AllSubRet))]
+  # return results
+  return(list(AllSubEnc,AllSubRet))
+}
+
+# make vectorized binomial test function
+binom.test_v <- function(hitVec, respVec, p = .5){
+  # for testing
+  #hitVec = round(AssoMemAcc$as_hr*448)	
+  #respVec = round(AssoMemAcc$prop_asso*448)
+  # actual code
+  #hitVec = round(hitVec*448)
+  #respVec = round(respVec*448)
+  asso_binom_p = rep(NA,length(hitVec))
+  # actual code
+  for (i in 1:length(hitVec)){
+    #i = 1
+    if (hitVec[i] != 0 | respVec[i] != 0){
+      asso_binom_p[i] <- binom.test(hitVec[i],respVec[i],p=p,alternative="greater", conf.level = 0.95)[[3]]
+    }
+  }
+  return(asso_binom_p)
+}
+
+# Function to assess overall performance
+chancePerf <- function(inDat, plots = T){
+  # for testing
+  #inDat = MBO_cleaned  #rm(inDat)
+  # actual code
+  EncDat = inDat[[1]]
+  RetDat = inDat[[2]]
+  # remove duplicate column names
+  #EncDat = EncDat[, !duplicated(colnames(EncDat))]
+  #RetDat = RetDat[, !duplicated(colnames(RetDat))]
+  # make columns for missed responses
+  EncDat$mr = ifelse(EncDat$response == 0,1,0)
+  EncDat$skp_fr = ifelse(abs(EncDat$SOAdev) > 1000/60,1,0)
+  RetDat$mr = ifelse(RetDat$response == 0,1,0)
+  # classification 
+  ClassAcc = EncDat %>% group_by(subject) %>% 
+    summarize(cls_ts_hr = mean(class_TS_hit), cls_cor = mean(class_cor), cls_pnr = mean(mr), 
+              numClsNr = sum(mr), numCorCls = sum(class_TS_hit), skp_fr = mean(skp_fr),
+              cls_binom_p = binom.test_v(numCorCls, 448-numClsNr, p = .25))
+  #View(ClassAcc)
+  ClassRt = EncDat %>% filter(class_TS_hit == 1) %>% group_by(subject) %>% 
+    summarize(cls_ts_hr_rt = median(latency))
+  # get associative memory  
+  AssoMemAcc = RetDat %>% filter(item_cor == "Old", source_resp == 1) %>% group_by(subject) %>% 
+    summarize(as_hr = mean(asso_hit, na.rm=T), as_fa = mean(asso_fa, na.rm=T), 
+              as_cHr = as_hr-as_fa, numAssoResp = sum(source_resp), numAssoHits = sum(asso_hit),        
+              prop_asso = (numAssoResp/672), asso_binom_p = binom.test_v(numAssoHits, numAssoResp, p = .5)) 
+  AssoMemRt = RetDat %>% filter(asso_hit == 1) %>% group_by(subject) %>% 
+    summarize(as_hr_rt = median(latency), age = mean(age_response))
+  # get item memory 
+  ItemMemAcc = RetDat %>% group_by(subject) %>% 
+    summarize(it_hr = mean(item_hit), it_fa = mean(item_fa), it_cr = mean(item_cr), 
+              it_miss = mean(item_miss), itOn_hr = mean(itemOnly_hit), mem_pnr = mean(mr))
+  ItemMemRt = RetDat %>% filter(item_hit == 1) %>% group_by(subject) %>% 
+    summarize(it_hr_rt = median(latency))
+  # bind together
+  list_df = list(ClassAcc,ClassRt,AssoMemAcc,AssoMemRt,ItemMemAcc,ItemMemRt)
+  sumDat = list_df %>% reduce(inner_join, by='subject')
+  # select above chance subjects
+  AssoThreshAll = sumDat %>% filter(skp_fr < .25) %>% 
+    filter(cls_pnr < .25) %>% filter(cls_binom_p < .05) %>% filter(asso_binom_p < .05) 
+  Excluded = sumDat %>% filter(subject %in% sumDat$subject[which(is.na(match(sumDat$subject,AssoThreshAll$subject)) == T)])
+  #View(Excluded)
+  # make plots
+  memAbc = length(which(sumDat$asso_binom_p < .05))
+  memPabc = round(memAbc/length(sumDat$subject),2)
+  clsAbc = length(which(sumDat$cls_binom_p < .05))
+  clsPabc = round(clsAbc/length(sumDat$subject),2)
+  # plots
+  if (plots == T){
+    memAsPlt = ggplot(sumDat, aes(x=as_cHr,y=asso_binom_p)) + geom_point(color="violetred4") + theme_classic() + 
+            ggtitle(paste("Associative HR,  numAb = ",memAbc,", probAb = ",memPabc,sep="")) +
+            geom_hline(yintercept=.05, linetype="dashed", color = "red")
+    # ggplot(Excluded, aes(x=asso_binom_p,y=cls_binom_p)) + geom_point(color="blue") + theme_classic() + 
+    #         ggtitle("Num Missed Class by binom p") +
+    #         geom_hline(yintercept=.05, linetype="dashed", color = "red") + 
+    #         geom_vline(xintercept=.05, linetype="dashed", color = "red")
+    ClsPlt = ggplot(sumDat, aes(x=cls_ts_hr,y=cls_binom_p)) + geom_point(color="blue") + theme_classic() + 
+            ggtitle(paste("Classificaiton HR,  numAb = ",clsAbc,", probAb = ",clsPabc,sep="")) +
+            geom_hline(yintercept=.05, linetype="dashed", color = "red")
+    return(list(sumDat,AssoThreshAll,memAsPlt,ClsPlt,Excluded))
+  } else {
+    return(list(sumDat,AssoThreshAll,Excluded))
+  }
+}
+
+# tet data cleaning pipeline
+#test = datCLWrap(MBO_dat, MBO_surv, stimList)
+#chancePerf(test, plots = T)
+```
+
+Functions to get residuals 
+
+```{r}
+# specify not in operator
+`%notin%` <- Negate(`%in%`)
+# function to normalize hr between 0 and 1
+norm_hr <- function(raw_hr){
+  normed_hr = (raw_hr-min(raw_hr))/(max(raw_hr)-min(raw_hr))
+  return(normed_hr)
+}
+# geometric mean function
+geoMean <- function(x){
+  geo_mean = exp(mean(log(x)))
+  return(geo_mean)
+}
+# function to get individualized residuals
+getResid_ind <- function(inEnc, inRet, rmTri1 = T, wPlots = T, lat = 300){ # , winProbs = c(0.01, 0.99)
+  # for testing
+  #inEnc = EncDat_v4; inRet = RetDat_v4; rmTri1 = T; wPlots = T; lat = 300; winProbs = c(0.01, 0.99)
+  #rm(inEnc); rm(inRet) # clear 
+  # actual code
+  enTri = inEnc %>% select("subject","stimulus","trialnum","blockcode") %>% rename(enc_trialnum = trialnum, enc_blockcode = blockcode) # get the encoding trialnum
+  inRet_wet = left_join(inRet,enTri, by = c("subject","stimulus"))                                                                     # bind to retrieval
+  # binarize the task and swst regressors
+  inEnc$Task_bin <- ifelse(inEnc$Task == "InOut",.5,-.5)
+  inEnc$SwSt_bin <- ifelse(inEnc$SwSt == "Stay",.5,-.5)
+  inRet_wet$Task_bin <- ifelse(inRet_wet$Task == "InOut",.5,-.5)
+  inRet_wet$SwSt_bin <- ifelse(inRet_wet$SwSt == "Stay",.5,-.5)
+  # remove trial 1 
+  if (rmTri1 == T){
+    inEnc = inEnc %>% filter(trialnum != 1)
+    inRet_wet = inRet_wet %>% filter(enc_trialnum != 1) # also removes new trials
+  }
+  # subject for loop
+  subs = unique(inEnc$subject)
+  c = 0
+  for (subi in subs){
+    # for testing
+    #subi = subs[1]
+    c = c + 1
+    # isolate subject data
+    inEnc_si = inEnc %>% filter(subject == subi)
+    inRet_wet_si = inRet_wet %>% filter(subject == subi)
+    # -------------------------------- classification data -------------------------------------
+    # model for classification HR
+    inEnc_si_s             = inEnc_si %>% filter(latency > lat)                                       # remove fast resps
+    #inEnc_si_s             = rbind( filter(inEnc_si, latency > lat), filter(inEnc_si, class_TS_hit == 0 & latency < lat) )
+    hr_cls_mod_si          = glm(class_TS_hit ~ Task_bin + SwSt_bin + scale(trialnum), data = inEnc_si_s, family = binomial)
+    inEnc_si_s$hr_resid    = resid(hr_cls_mod_si, type = "response")                                  # get the hr residuals
+    inEnc_si_s$hr_resid_tr = norm_hr(inEnc_si_s$hr_resid) 
+    # class RT residuals
+    inEnc_si_c             = inEnc_si %>% filter(class_TS_hit == 1, latency > lat)
+    inEnc_si_c$latency     = DescTools::Winsorize(inEnc_si_c$latency) # , probs = winProbs , na.rm = FALSE, type = 7 # winzorize outliers
+    rt_cls_mod_si          = glm(latency ~ Task_bin + SwSt_bin + scale(trialnum), data = inEnc_si_c, family = inverse.gaussian(link = "log"))
+    inEnc_si_c$rt_resid    = resid(rt_cls_mod_si, type = "response")                                  # get residuals
+    inEnc_si_c$rt_resid_tr = inEnc_si_c$rt_resid+geoMean(inEnc_si_c$latency)
+    # bind RT and HR residuals
+    inEnc_si_s             = inEnc_si_s %>% select(hr_resid, hr_resid_tr, subject, stimulus)
+    inEnc_si_c             = inEnc_si_c %>% select(rt_resid,rt_resid_tr, subject, stimulus)
+    inEnc_si               = left_join(inEnc_si,inEnc_si_c, by = c("subject","stimulus"))
+    inEnc_si               = left_join(inEnc_si,inEnc_si_s, by = c("subject","stimulus"))
+    #ggplot(inEnc_si, aes(x = latency, y = rt_resid_tr)) + geom_point() + geom_smooth(method=lm)
+    #hist(inEnc_si$latency, breaks = 100); hist(inEnc_si$rt_resid, breaks = 100); hist(inEnc_si$rt_resid_tr, breaks = 100)
+    # -------------------------------- memory data -------------------------------------
+    # memory HR residuals 
+    inRet_wet_si_s             = inRet_wet_si %>% filter(latency > lat) # remove fast resps
+    #inRet_wet_si_s             = rbind( filter(inRet_wet_si, latency > lat), filter(inRet_wet_si, asso_hit == 0 & latency < lat) ) 
+    hr_mem_mod_si              = glm(asso_hit ~ Task_bin + SwSt_bin + scale(enc_trialnum), data = inRet_wet_si_s, family = binomial)
+    inRet_wet_si_s$hr_resid    = resid(hr_mem_mod_si, type = "response")
+    inRet_wet_si_s$hr_resid_tr = norm_hr(inRet_wet_si_s$hr_resid)                     # normalize the values between 0 and 1                
+    #hist(inRet_wet_si$hr_resid, breaks = 100); hist(inRet_wet_si$hr_resid_tr, breaks = 100)
+    # memory RT residuals
+    inRet_wet_si_c             = inRet_wet_si %>% filter(asso_hit == 1, latency > lat) #, latency < 3000)
+    inRet_wet_si_c$latency     = DescTools::Winsorize(inRet_wet_si_c$latency) # , probs = winProbs , na.rm = FALSE, type = 7
+    rt_mem_mod_si              = glm(latency ~ Task_bin + SwSt_bin + scale(enc_trialnum), data = inRet_wet_si_c, 
+                                     family = inverse.gaussian(link = "log"))
+    inRet_wet_si_c$rt_resid    = resid(rt_mem_mod_si, type = "response")
+    inRet_wet_si_c$rt_resid_tr = inRet_wet_si_c$rt_resid+geoMean(inRet_wet_si_c$latency)
+    # bind
+    inRet_wet_si_s = inRet_wet_si_s %>% select(hr_resid, hr_resid_tr, subject, stimulus)
+    inRet_wet_si_c = inRet_wet_si_c %>% select(rt_resid, rt_resid_tr, subject, stimulus)
+    inRet_wet_si   = left_join(inRet_wet_si,inRet_wet_si_c, by = c("subject","stimulus"))
+    inRet_wet_si   = left_join(inRet_wet_si,inRet_wet_si_s, by = c("subject","stimulus"))
+    #ggplot(inRet_wet_si, aes(x = latency, y = rt_resid_tr)) + geom_point() + geom_smooth(method=lm)
+    #hist(inRet_wet_si$latency, breaks = 100); hist(inRet_wet_si$rt_resid, breaks = 100); hist(inRet_wet_si$rt_resid_tr, breaks = 100)
+    if (c == 1){
+      inEnc_si_as     = inEnc_si
+      inRet_wet_si_as = inRet_wet_si
+    } else {
+      inEnc_si_as     = rbind(inEnc_si_as,inEnc_si)
+      inRet_wet_si_as = rbind(inRet_wet_si_as,inRet_wet_si)      
+    }
+    print(c)
+    #rm(inEnc_si_as); rm(inRet_wet_si_as)
+  }
+  # return
+  if (wPlots == T){
+    # cor dfs
+    inEnc_si_as_cr = inEnc_si_as %>% filter(class_TS_hit == 1)
+    inRet_wet_si_as_cr = inRet_wet_si_as %>% filter(asso_hit == 1)
+    # make some plots of model output
+    cl_hr_raw = ggplot(inEnc_si_as, aes(x=class_TS_hit)) + geom_histogram(binwidth = .05)
+    cl_hr_res = ggplot(inEnc_si_as, aes(x=hr_resid)) + geom_histogram(binwidth = .05, fill = "red")
+    cl_hr_res_tr = ggplot(inEnc_si_as, aes(x=hr_resid_tr)) + geom_histogram(binwidth = .01, fill = "blue")
+    cl_rt_raw = ggplot(inEnc_si_as_cr, aes(x=latency)) + geom_histogram(binwidth = 20)
+    cl_rt_res = ggplot(inEnc_si_as_cr, aes(x=rt_resid)) + geom_histogram(binwidth = 20, fill = "red")
+    cl_rt_res_tr = ggplot(inEnc_si_as_cr, aes(x=rt_resid_tr)) + geom_histogram(binwidth = 20, fill = "blue")
+    mem_hr_raw = ggplot(inRet_wet_si_as, aes(x=asso_hit)) + geom_histogram(binwidth = .05)
+    mem_hr_res = ggplot(inRet_wet_si_as, aes(x=hr_resid)) + geom_histogram(binwidth = .05, fill = "red")
+    mem_hr_res_tr = ggplot(inRet_wet_si_as, aes(x=hr_resid_tr)) + geom_histogram(binwidth = .01, fill = "blue")
+    mem_rt_raw = ggplot(inRet_wet_si_as_cr, aes(x=latency)) + geom_histogram(binwidth = 20)
+    mem_rt_res = ggplot(inRet_wet_si_as_cr, aes(x=rt_resid)) + geom_histogram(binwidth = 20, fill = "red")
+    mem_rt_res_tr = ggplot(inRet_wet_si_as_cr, aes(x=rt_resid_tr)) + geom_histogram(binwidth = 20, fill = "blue")
+    # make plot objects
+    all_plts = list(cl_hr_raw=cl_hr_raw,cl_hr_res=cl_hr_res,cl_hr_res_tr=cl_hr_res_tr,
+                    cl_rt_raw=cl_rt_raw,cl_rt_res=cl_rt_res,cl_rt_res_tr=cl_rt_res_tr,
+                    mem_hr_raw=mem_hr_raw,mem_hr_res=mem_hr_res,mem_hr_res_tr=mem_hr_res_tr,
+                    mem_rt_raw=mem_rt_raw,mem_rt_res=mem_rt_res,mem_rt_res_tr=mem_rt_res_tr)
+    return(list(cls_resid=inEnc_si_as,mem_resid=inRet_wet_si_as,plots=all_plts))
+  } else {
+    return(list(cls_resid=inEnc_si_as,mem_resid=inRet_wet_si_as))
+  }
+}
+```
+
+Functions to get SOA time-courses for AR1 control analyses
+
+```{r}
+# function to average by SOA
+soa_avg <- function(subDt_in, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = F, lat = 0){ #, lb_lat = 100
+  #rm(subDt)
+  #subDt_in = RetDat_v4_res; erTask = "M"; dv = "hr"; resid = F; rand = F; NArm = T; drp = T # for testing rm(resid)
+  # actual code
+  soaMM = c( min(subDt_in$SOAcorr_ct, na.rm=T), max(subDt_in$SOAcorr_ct, na.rm=T) ) # get min and max SOA values
+  #set.seed(seed)
+  if (rand == T){
+    subDt = subDt_in %>% group_by(subject) %>% mutate(SOAcorr_ct = sample(SOAcorr_ct)) #select(test, SOAcorr_ct)
+  } else {
+    subDt = subDt_in 
+  }
+  # use residuals (works for accuracy and classification)
+  if (resid == T){
+    
+    # For memory
+    if (erTask == "M"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    # for classification
+    } else if (erTask == "C"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    }
+  # otherwise get raw values
+  } else if (resid == F){
+    
+    # For memory
+    if (erTask == "M"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(asso_hit, na.rm=NArm))
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(asso_hit, na.rm=NArm))
+        rt_ts = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    # for classification
+    } else if (erTask == "C"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(class_TS_hit, na.rm=NArm))
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(class_TS_hit, na.rm=NArm))
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    }
+  }
+  # identify subjects with missing data for some SOA's
+  drpSubs = checkSOA(soaDf, dv = dv, soaMM = soaMM)
+  # warning message
+  if ( length(drpSubs) > 0 ){
+    if (drp == F){
+      warning(paste(length(drpSubs)," participants had missing data for some SOA's",sep=""))
+    } else {
+      warning(paste(length(drpSubs)," participants had missing data for some SOA's, they will be dropped",sep=""))
+    }
+    drpB = T
+  } else {
+    drpB = F
+  }
+  # drop subjects with missing data
+  if (drp == T){soaDf_out = filter(soaDf, subject %notin% drpSubs)} else {soaDf_out = soaDf}
+  return(list(soaData=soaDf_out,drp_tf=drpB,drp_subs=drpSubs))
+}
+# test function
+#soa_avg(RetDat_v1, erTask = "M", dv = "rt", resid = F, rand = F, seed = 1, NArm = F, drp = T)
+
+# function to check if there are subjects with missing SOA data
+checkSOA <- function(SOAdat, dv = dv, soaMM = c(200,1100)){
+  # for testing
+  #SOAdat = soaDf; dv = "hr"; soaMM = c(200,1100)
+  # actual code
+  lessSOA = SOAdat %>% group_by(subject) %>% summarize(soaNum = sum(SOAcorr_ct))
+  totSOA = sum(round(seq(soaMM[1],soaMM[2],by=1000/30),2))
+  subsDrpSOA = lessSOA[which(lessSOA$soaNum != totSOA),]$subject    # identify subjects with missing SOAs
+  subsNA = unique(SOAdat$subject[which(is.na(SOAdat[,dv]) == T)])               # identify subjects with NA's 
+  drpSubs_o = unique(c(subsDrpSOA,subsNA))                                              # subject to drop
+  return(drpSubs_o)
+}
+```
+
+
+

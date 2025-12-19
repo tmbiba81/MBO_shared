@@ -1,0 +1,191 @@
+---
+title: "MBO_data_cleaning"
+author: "Thomas Biba"
+date: '2023-06-01'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load needed libraries
+
+```{r}
+libraries = c('tidyverse', 'psycho', 'DescTools','reshape2')
+invisible(lapply(libraries, install.packages, character.only = TRUE))
+invisible(lapply(libraries, library, character.only = TRUE))
+rename <- dplyr::rename; bind_rows <- dplyr::bind_rows
+```
+
+Set the master path and stimulus list
+
+```{r}
+master_path = "~/Documents/GitHub/MBO_shared/"
+dat_path = paste(master_path,"/Stimuli/",sep="") 
+stimList = read.csv(paste(dat_path,"full_dt_wdr.csv",sep=""))
+```
+
+# Pilot experiment 1 data cleaning
+
+Note: This version included the fixation cross as a color cue. It also had a 200 ms cue duration, and delay from 200-1100 ms (400-1300 ms SOA). Switch vs stay were balanced across SOA's but task type was not. 
+
+```{r}
+# most recent dataset (last 40 subject of mask version 1)
+for (i in 1:3){
+  #i = 1
+  dat_path = paste(master_path,"Data/Raw/pilot_1/batch_",i,sep="") 
+  files = list.files(dat_path)
+  MBO_dat_i = read.csv(paste(dat_path,files[1],sep="/"))
+  MBO_surv_i = read.csv(paste(dat_path,files[3],sep="/"))
+  if (i == 1){
+    MBO_dat = MBO_dat_i; MBO_surv = MBO_surv_i
+  } else {
+    MBO_dat = bind_rows(MBO_dat,MBO_dat_i); MBO_surv = rbind(MBO_surv,MBO_surv_i)
+  }
+}
+MBO_cleaned = datCLWrap(MBO_dat, MBO_surv, stimList, soaInc = 1000/30, sf = 1000/60, 
+                                 soaWind = c(400,1300), cueDur = 200)
+MBO_abc = chancePerf(MBO_cleaned, plots = T)
+MBO_abc
+# Filter out older adults
+MBO_cleaned[[1]] = MBO_cleaned[[1]] %>% filter(age_response < 36)
+MBO_cleaned[[2]] = MBO_cleaned[[2]] %>% filter(age_response < 36)
+MBO_abc[[1]] = MBO_abc[[1]] %>% filter(age < 36)
+MBO_abc[[2]] = MBO_abc[[2]] %>% filter(age < 36)
+# save full cleaned data
+all_data_dir = paste(master_path,"Data/Cleaned/All/pilot_1/",sep="")
+if (!dir.exists(all_data_dir)) {dir.create(all_data_dir, recursive = TRUE)}
+write_csv(MBO_cleaned[[1]],paste(all_data_dir,"EncDat_cl_v1.csv",sep=""))
+write_csv(MBO_cleaned[[2]],paste(all_data_dir,"RetDat_cl_v1.csv",sep=""))
+write_csv(MBO_abc[[1]],paste(all_data_dir,"ERsumDat_cl_v1.csv",sep=""))
+# save data after exclusion
+post_exclude_dir = paste(master_path,"Data/Cleaned/postExclude/pilot_1/",sep="")
+if (!dir.exists(post_exclude_dir)) {dir.create(post_exclude_dir, recursive = TRUE)}
+write_csv(MBO_abc[[2]],paste(post_exclude_dir,"ERsumDat_abc_v1.csv",sep=""))
+EncDat_abc = MBO_cleaned[[1]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+RetDat_abc = MBO_cleaned[[2]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+write_csv(EncDat_abc,paste(post_exclude_dir,"EncDat_abc_v1.csv",sep=""))
+write_csv(RetDat_abc,paste(post_exclude_dir,"RetDat_abc_v1.csv",sep=""))
+```
+
+# Pilot experiment 2 data cleaning 
+
+Note: This version included the background screen as a color cue. It had a 100 ms cue duration, and a delay from 100-1000 ms (200-1100 ms SOA). Switch vs stay were balanced across SOA's but task type was not. 
+
+```{r}
+# most recent dataset (last 40 subject of mask version 1)
+dat_path = paste(master_path,"Data/Raw/pilot_2/",sep="") 
+files = list.files(dat_path)
+MBO_dat = read.csv(paste(dat_path,files[1],sep=""))
+MBO_surv = read.csv(paste(dat_path,files[3],sep=""))
+MBO_cleaned = datCLWrap(MBO_dat, MBO_surv, stimList, soaInc = 1000/30, sf = 1000/60, 
+                                 soaWind = c(200,1100), cueDur = 100)
+MBO_abc = chancePerf(MBO_cleaned, plots = T)
+MBO_abc
+# save full cleaned data
+all_data_dir = paste(master_path,"Data/Cleaned/All/pilot_2/",sep="")
+if (!dir.exists(all_data_dir)) {dir.create(all_data_dir, recursive = TRUE)}
+write_csv(MBO_cleaned[[1]],paste(all_data_dir, "EncDat_cl_v2.csv",sep=""))
+write_csv(MBO_cleaned[[2]],paste(all_data_dir, "RetDat_cl_v2.csv",sep=""))
+write_csv(MBO_abc[[1]],paste(all_data_dir, "ERsumDat_cl_v2.csv",sep=""))
+# save data after exclusion
+post_exclude_dir = paste(master_path,"Data/Cleaned/postExclude/pilot_2/",sep="")
+if (!dir.exists(post_exclude_dir)) {dir.create(post_exclude_dir, recursive = TRUE)}
+write_csv(MBO_abc[[2]],paste(post_exclude_dir, "ERsumDat_abc_v2.csv",sep=""))
+EncDat_abc = MBO_cleaned[[1]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+RetDat_abc = MBO_cleaned[[2]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+write_csv(EncDat_abc,paste(post_exclude_dir, "EncDat_abc_v2.csv",sep=""))
+write_csv(RetDat_abc,paste(post_exclude_dir, "RetDat_abc_v2.csv",sep=""))
+```
+
+# Confirmatory Experiment data cleaning
+
+Note: This version included the background screen as a color cue. It had a 100 ms cue durtation, and a delay from 100-1000 ms (200-1100 ms SOA). Switch vs stay were balanced across SOA's and so was task type. SOA, however was correlated with trial number in this version. 
+
+```{r}
+# most recent dataset (last 40 subject of mask version 1)
+dat_path = paste(master_path,"/Data/Raw/confirmatory_experiment/",sep="") 
+files = list.files(dat_path)
+MBO_dat = read.csv(paste(dat_path,files[1],sep=""))
+MBO_surv = read.csv(paste(dat_path,files[3],sep=""))
+MBO_cleaned = datCLWrap(MBO_dat, MBO_surv, stimList, soaInc = 1000/30, sf = 1000/60, 
+                                 soaWind = c(200,1100), cueDur = 100)
+MBO_abc = chancePerf(MBO_cleaned, plots = T)
+MBO_abc
+# all dir
+all_data_dir = paste(master_path,"Data/Cleaned/All/confirmatory_experiment/",sep="")
+if (!dir.exists(all_data_dir)) {dir.create(all_data_dir, recursive = TRUE)}
+write_csv(MBO_cleaned[[1]],paste(all_data_dir, "EncDat_cl_v3.csv",sep=""))
+write_csv(MBO_cleaned[[2]],paste(all_data_dir, "RetDat_cl_v3.csv",sep=""))
+write_csv(MBO_abc[[1]],paste(all_data_dir, "ERsumDat_cl_v3.csv",sep=""))
+# save data after exclusion
+post_exclude_dir = paste(master_path,"Data/Cleaned/postExclude/confirmatory_experiment/",sep="")
+if (!dir.exists(post_exclude_dir)) {dir.create(post_exclude_dir, recursive = TRUE)}
+ggsave(paste(post_exclude_dir, "EncABC_v3.jpg",sep=""),MBO_abc[[4]])
+ggsave(paste(post_exclude_dir, "RetABC_v3.jpg",sep=""),MBO_abc[[3]])
+write_csv(MBO_abc[[5]],paste(post_exclude_dir, "ERsumDat_excluded_v3.csv",sep=""))
+write_csv(MBO_abc[[2]],paste(post_exclude_dir, "ERsumDat_abc_v3.csv",sep=""))
+EncDat_abc = MBO_cleaned[[1]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+RetDat_abc = MBO_cleaned[[2]] %>% filter(subject %in% c(MBO_abc[[2]]$subject))
+write_csv(EncDat_abc,paste(post_exclude_dir, "EncDat_abc_v3.csv",sep=""))
+write_csv(RetDat_abc,paste(post_exclude_dir, "RetDat_abc_v3.csv",sep=""))
+```
+
+## Get residuals for confirmatory dataset
+
+Run model and save residuals 
+
+```{r}
+resid_path = paste(master_path,"Data/Cleaned/Resid/",sep="")
+files = list.files(resid_path)
+# if the residuals already exist use them, otherwise get them
+if (any(files == "EncDat_v3_res.csv") | any(files == "EncDat_v3_res.csv")){
+  print(paste("Loading previously generated residuals"))
+  EncDat_v3_res = read_csv(paste(resid_path,"EncDat_v3_res.csv",sep=""))
+  RetDat_v3_res = read_csv(paste(resid_path,"RetDat_v3_res.csv",sep=""))
+} else {
+  print(paste("Getting residuals"))
+  # get residuals 
+  resid_v3 = getResid_ind(EncDat_v3, RetDat_v3, rmTri1 = T, wPlots = T, lat = 300) # , winProbs = c(0.05, 0.95)
+  EncDat_v3_res = resid_v3$cls_resid; RetDat_v3_res = resid_v3$mem_resid # separate into enc and ret
+  # make dir if doesn't exist
+  if (!dir.exists(resid_path)) {dir.create(resid_path, recursive = TRUE)}
+  # save
+  write_csv(EncDat_v3_res, paste(resid_path,"EncDat_v3_res.csv",sep=""))
+  write_csv(RetDat_v3_res, paste(resid_path,"RetDat_v3_res.csv",sep=""))
+  # save results
+  plot_path = paste(master_path,"Data/Cleaned/Resid/plots/",sep="")
+  if (!dir.exists(plot_path)) {dir.create(plot_path, recursive = TRUE)}
+  residPlots = resid_v3$plots
+  lapply(names(residPlots), function(x) ggsave(filename=paste(x,".jpeg",sep=""),
+                                               path=paste(resid_path,"plots",sep=""),
+                                               plot=residPlots[[x]]))
+}
+#length(unique(resid_v3$mem_resid$subject))
+```
+
+
+## Convert data format for control analysis
+
+```{r}
+# convert data format by casting
+AvgSOA_memhr_cast = acast(soa_avg(RetDat_v3_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)[[1]],  subject ~ SOAcorr_ct )
+AvgSOA_memrt_cast = acast(soa_avg(RetDat_v3_res, erTask = "M", dv = "rt", resid = T, rand = F, NArm = T, drp = T)[[1]],  subject ~ SOAcorr_ct )
+AvgSOA_memies_cast = acast(soa_avg(RetDat_v3_res, erTask = "M", dv = "ies", resid = T, rand = F, NArm = T, drp = T)[[1]],  subject ~ SOAcorr_ct )
+#AvgSOA_memhr_cast; AvgSOA_memrt_cast; AvgSOA_memies_cast
+# rename rows and column names
+AvgSOA_memhr_df = as.data.frame(AvgSOA_memhr_cast)
+AvgSOA_memrt_df = as.data.frame(AvgSOA_memrt_cast)
+AvgSOA_memies_df = as.data.frame(AvgSOA_memies_cast)
+colnames(AvgSOA_memhr_df) <- 1:dim(AvgSOA_memhr_df)[2]; rownames(AvgSOA_memhr_df) <- 1:dim(AvgSOA_memhr_df)[1]
+colnames(AvgSOA_memrt_df) <- 1:dim(AvgSOA_memrt_df)[2]; rownames(AvgSOA_memrt_df) <- 1:dim(AvgSOA_memrt_df)[1]
+colnames(AvgSOA_memies_df) <- 1:dim(AvgSOA_memies_df)[2]; rownames(AvgSOA_memies_df) <- 1:dim(AvgSOA_memies_df)[1]
+# write to csv
+csv_path = paste(master_path,"Data/Timeseries/",sep="")
+write_csv(AvgSOA_memhr_df, paste(csv_path,"SoaDat_HR_v3.csv",sep=""))
+write_csv(AvgSOA_memrt_df, paste(csv_path,"SoaDat_RT_v3.csv",sep=""))
+write_csv(AvgSOA_memies_df, paste(csv_path,"SoaDat_IES_v3.csv",sep=""))
+```
+
+
