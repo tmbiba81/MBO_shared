@@ -1,0 +1,1998 @@
+---
+title: "MBO_data_analysis_helper"
+author: "Thomas Biba"
+date: '2023-06-01'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(dplyr.summarise.inform = FALSE)
+library("ggplot2")
+```
+
+
+load analysis functions
+
+# Stat functions for NHB
+
+```{r}
+
+# Assuming normal approximation
+get_perm_ci <- function(perm_dist, hz = 7, tail = "One", norm = T, rnd = 2){
+  #perm_dist = mem_hr_v4; hz = 7; tail = "One"; norm = T
+  # get values 
+  perm_values = perm_dist[,hz-2]
+  perm_values = as.vector(unlist(perm_values))
+  perm_mean = mean(perm_values); perm_sd = sd(perm_values)
+  # get ci
+  if (norm == T & tail == "One"){
+    ci_lower = perm_mean - 1.645 * perm_sd
+    ci_upper = perm_mean + 1.645 * perm_sd
+  } else if (norm == F & tail == "Two"){
+    ci = quantile(perm_values, probs = c(0.025, 0.975))
+    ci_lower = ci[1]
+    ci_upper = ci[2]
+  }
+  return(list(ci_lower=round(ci_lower, rnd), ci_upper=round(ci_upper, rnd)))
+}
+```
+
+Bayes factor Spearman's rho <https://rdrr.io/cran/BayesFactor/man/correlationBF.html>
+
+```{r}
+##' Bayes factors or posterior samples for correlations.
+##'
+##' The Bayes factor provided by \code{ttestBF} tests the null hypothesis that
+##' the true linear correlation \eqn{\rho}{rho} between two samples (\eqn{y}{y} and \eqn{x}{x})
+##' of size \eqn{n}{n} from normal populations is equal to 0. The Bayes factor is based on Jeffreys (1961)
+##' test for linear correlation. Noninformative priors are assumed for the population means and
+##' variances of the two population; a shifted, scaled beta(1/rscale,1/rscale) prior distribution
+##' is assumed for \eqn{\rho}{rho} (note that \code{rscale} is called \eqn{\kappa}{kappa} by
+##' Ly et al. 2015; we call it \code{rscale} for consistency with other BayesFactor functions).
+##'
+##' For the \code{rscale} argument, several named values are recognized:
+##' "medium.narrow", "medium", "wide", and "ultrawide". These correspond
+##' to \eqn{r} scale values of \eqn{1/\sqrt(27)}{1/sqrt(27)}, \eqn{1/3}{1/3},
+##' \eqn{1/\sqrt(3)}{1/sqrt(3)} and 1, respectively.
+##'
+##' The Bayes factor is computed via several different methods.
+##' @title Function for Bayesian analysis of correlations
+##' @param y first continuous variable
+##' @param x second continuous variable
+##' @param rscale prior scale.  A number of preset values can be given as
+##'   strings; see Details.
+##' @param nullInterval optional vector of length 2 containing
+##' lower and upper bounds of an interval hypothesis to test, in correlation units
+##' @param posterior if \code{TRUE}, return samples from the posterior instead
+##'   of Bayes factor
+##' @param callback callback function for third-party interfaces
+##' @param ... further arguments to be passed to or from methods.
+##' @return If \code{posterior} is \code{FALSE}, an object of class
+##'   \code{BFBayesFactor} containing the computed model comparisons is
+##'   returned. If \code{nullInterval} is defined, then two Bayes factors will
+##'   be computed: The Bayes factor for the interval against the null hypothesis
+##'   that the probability is 0, and the corresponding Bayes factor for
+##'   the complement of the interval.
+##'
+##'   If \code{posterior} is \code{TRUE}, an object of class \code{BFmcmc},
+##'   containing MCMC samples from the posterior is returned.
+##' @export
+##' @keywords htest
+##' @author Richard D. Morey (\email{richarddmorey@@gmail.com})
+##' @examples
+##' bf = correlationBF(y = iris$Sepal.Length, x = iris$Sepal.Width)
+##' bf
+##' ## Sample from the corresponding posterior distribution
+##' samples = correlationBF(y = iris$Sepal.Length, x = iris$Sepal.Width,
+##'           posterior = TRUE, iterations = 10000)
+##' plot(samples[,"rho"])
+##' @seealso \code{\link{cor.test}}
+##' @references Ly, A., Verhagen, A. J. & Wagenmakers, E.-J. (2015).
+##' Harold Jeffreys's Default Bayes Factor Hypothesis Tests: Explanation, Extension, and Application in Psychology.
+##' Journal of Mathematical Psychology, Available online 28 August 2015, https://dx.doi.org/10.1016/j.jmp.2015.06.004.
+##'
+##' Jeffreys, H. (1961). Theory of probability, 3rd edn. Oxford, UK: Oxford University Press.
+
+correlationBF <- function(y, x, rscale = "medium", nullInterval = NULL, posterior=FALSE, callback = function(...) as.integer(0), ...)
+{
+  if(!is.null(nullInterval)){
+    if(any(nullInterval< -1) | any(nullInterval>1)) stop("nullInterval endpoints must be in [-1,1].")
+    nullInterval = range(nullInterval)
+  }
+  rscale = rpriorValues("correlation",,rscale)
+
+  if( length(y) != length(x) ) stop("Length of y and x must be the same.")
+  if(!is.null(nullInterval))
+    if(any(abs(nullInterval)>1))
+      stop("Invalid interval hypothesis; endpoints must be in [-1,1].")
+  if( length(y)<3 )  stop("N must be >2.")
+  n = length(x) - sum(is.na(y) | is.na(x))
+  if(n < 3) stop("Need at least 3 complete observations.")
+
+  hypNames = makeCorrHypothesisNames(rscale, nullInterval)
+
+  mod1 = BFcorrelation(type = "Jeffreys-beta*",
+                 identifier = list(formula = "rho =/= 0", nullInterval = nullInterval),
+                 prior=list(rscale=rscale, nullInterval = nullInterval),
+                 shortName = hypNames$shortName,
+                 longName = hypNames$longName
+  )
+
+  data = data.frame(y = y, x = x)
+
+  checkCallback(callback,as.integer(0))
+
+  if(posterior)
+    return(posterior(mod1, data = data, callback = callback, ...))
+
+  bf1 = compare(numerator = mod1, data = data)
+
+  if(!is.null(nullInterval)){
+    mod2 = mod1
+    attr(mod2@identifier$nullInterval, "complement") = TRUE
+    attr(mod2@prior$nullInterval, "complement") = TRUE
+    hypNames = makeCorrHypothesisNames(rscale, mod2@identifier$nullInterval)
+    mod2@shortName = hypNames$shortName
+    mod2@longName = hypNames$longName
+
+    bf2 = compare(numerator = mod2, data = data)
+    checkCallback(callback,as.integer(1000))
+    return(c(bf1, bf2))
+  }else{
+    checkCallback(callback,as.integer(1000))
+    return(c(bf1))
+  }
+}
+```
+
+
+# New FFT functions
+
+```{r}
+# specify not in operator
+`%notin%` <- Negate(`%in%`)
+# function to normalize hr between 0 and 1
+norm_hr <- function(raw_hr){
+  normed_hr = (raw_hr-min(raw_hr))/(max(raw_hr)-min(raw_hr))
+  return(normed_hr)
+}
+# geometric mean function
+geoMean <- function(x){
+  geo_mean = exp(mean(log(x)))
+  return(geo_mean)
+}
+# test function
+#residTest = getResid_ind(EncDat_v4, RetDat_v4, rmTri1 = T, wPlots = T, lat = 300, winProbs = c(0.05, 0.95))
+#residTest
+
+# function to average by SOA
+soa_avg <- function(subDt_in, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = F, lat = 0){ #, lb_lat = 100
+  #rm(subDt)
+  #subDt_in = RetDat_v4_res; erTask = "M"; dv = "hr"; resid = F; rand = F; NArm = T; drp = T # for testing rm(resid)
+  # actual code
+  soaMM = c( min(subDt_in$SOAcorr_ct, na.rm=T), max(subDt_in$SOAcorr_ct, na.rm=T) ) # get min and max SOA values
+  #set.seed(seed)
+  if (rand == T){
+    subDt = subDt_in %>% group_by(subject) %>% mutate(SOAcorr_ct = sample(SOAcorr_ct)) #select(test, SOAcorr_ct)
+  } else {
+    subDt = subDt_in 
+  }
+  # use residuals (works for accuracy and classification)
+  if (resid == T){
+    
+    # For memory
+    if (erTask == "M"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    # for classification
+    } else if (erTask == "C"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(hr_resid_tr, na.rm=NArm)) 
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(rt_resid_tr, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    }
+  # otherwise get raw values
+  } else if (resid == F){
+    
+    # For memory
+    if (erTask == "M"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(asso_hit, na.rm=NArm))
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(asso_hit, na.rm=NArm))
+        rt_ts = subDt %>% filter(item_cor == "Old", is.na(SOAcorr_ct) == F, asso_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    # for classification
+    } else if (erTask == "C"){
+      if (dv == "hr"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(class_TS_hit, na.rm=NArm))
+      } else if (dv == "rt"){
+        soaDf = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+      } else if (dv == "ies"){
+        hr_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(hr = mean(class_TS_hit, na.rm=NArm))
+        rt_ts = subDt %>% filter(is.na(SOAcorr_ct) == F, class_TS_hit == 1, latency > lat) %>% 
+          group_by(subject, SOAcorr_ct) %>% summarize(rt = median(latency, na.rm=NArm))
+        soaDf = left_join(hr_ts,rt_ts, by = c("subject","SOAcorr_ct")) %>% mutate(ies = rt/hr)
+      }
+    }
+  }
+  # identify subjects with missing data for some SOA's
+  drpSubs = checkSOA(soaDf, dv = dv, soaMM = soaMM)
+  # warning message
+  if ( length(drpSubs) > 0 ){
+    if (drp == F){
+      warning(paste(length(drpSubs)," participants had missing data for some SOA's",sep=""))
+    } else {
+      warning(paste(length(drpSubs)," participants had missing data for some SOA's, they will be dropped",sep=""))
+    }
+    drpB = T
+  } else {
+    drpB = F
+  }
+  # drop subjects with missing data
+  if (drp == T){soaDf_out = filter(soaDf, subject %notin% drpSubs)} else {soaDf_out = soaDf}
+  return(list(soaData=soaDf_out,drp_tf=drpB,drp_subs=drpSubs))
+}
+# test function
+#soa_avg(RetDat_v1, erTask = "M", dv = "rt", resid = F, rand = F, seed = 1, NArm = F, drp = T)
+
+# function to check if there are subjects with missing SOA data
+checkSOA <- function(SOAdat, dv = dv, soaMM = c(200,1100)){
+  # for testing
+  #SOAdat = soaDf; dv = "hr"; soaMM = c(200,1100)
+  # actual code
+  lessSOA = SOAdat %>% group_by(subject) %>% summarize(soaNum = sum(SOAcorr_ct))
+  totSOA = sum(round(seq(soaMM[1],soaMM[2],by=1000/30),2))
+  subsDrpSOA = lessSOA[which(lessSOA$soaNum != totSOA),]$subject    # identify subjects with missing SOAs
+  subsNA = unique(SOAdat$subject[which(is.na(SOAdat[,dv]) == T)])               # identify subjects with NA's 
+  drpSubs_o = unique(c(subsDrpSOA,subsNA))                                              # subject to drop
+  return(drpSubs_o)
+}
+
+# function to find critical value of x (given mean, sd and z)
+critVal <- function(mu,sig,z){ x = (z*sig) + mu ; return(x) }
+
+# function to get z value
+getZ <- function(ve,vn_m,vn_sd){ z = (ve - vn_m)/vn_sd ; return(z)}
+
+# create a function to give you the FFT (input is the time series, the hanning window and then a logical to determine if the ts should be shuffled)
+getSpec_pmp <- function(ts, dtr = T, hw = T, output = "power", nSamp = 30, sf = 30, fq_wind = c(3,14)){
+  # for testing
+  #ts = outDat; rand = F; dtr = T; hw = T; output = "power"; nSamp = 30; fq_wind = c(3,14)
+  # pre-warnings
+  if (length(ts) != 28){warning("Incorret time-series lenght (i.e. != 28)")}
+  # pre-proccess the data
+  if (dtr == T){detr = detrend(ts, wav=1:length(ts), p = 2)} else {detr = ts}          # normalize and detrend with second order ploy (prospectr package)
+  if (hw == TRUE){ts_wind <- detr*hanning.window(length(ts))} else {ts_wind <- detr}   # apply a han window
+  ts_wind_z <- c(ts_wind,rep(0,nSamp-length(ts_wind)))                                 # zero pad to the number of timepoints specified
+  # apply FFT
+  ffts <- fft(ts_wind_z, inverse = FALSE)                                              # get the fft values
+  fqs = seq(0,(length(ffts)-1),sf/length(ts_wind_z))[1:length(ffts)]                   # label frequency bins
+  # Specify the output
+  fft_dat <- data.frame(freq_bin_hz=fqs,complex=ffts)                  # extract the real and imaginary attributes
+  if (output == "power"){
+    fft_dat$val <- abs(fft_dat$complex)^2
+  } else if (output == "magnitude"){
+    fft_dat$val <- abs(fft_dat$complex)
+  } else if (output == "phase"){
+    fft_dat$val <- atan2(Im(fft_dat$complex),Re(fft_dat$complex))
+  }                                                                    
+  nl_fft <- fft_dat[2:(nSamp/2),]    # cut off zero and niquist                                                               
+  # get amplitude spectra
+  freqs = nl_fft$freq_bin_hz
+  vals = nl_fft$val
+  # cut things based on the window
+  if (length(freqs) != length(vals)){warning("Frequency labels different length as fft output")}
+  suppressWarnings({
+    freqs_c = freqs[which(freqs >= fq_wind[1]):which(freqs == fq_wind[2])]
+    val_c = vals[which(freqs >= fq_wind[1]):which(freqs == fq_wind[2])]
+  })
+  #spectr = nl_fft$mag
+  return(list(val_c,freqs_c,output))
+}
+
+#soaDat_test = filter(soa_avg(RetDat_v3, erTask = "M", dv = "hr", resid = F, rand = F, seed = 1), subject == subs[i])
+#test = soa_avg(RetDat_v2, erTask = "M", dv = "hr", resid = F, rand = F, seed = 1)
+# group FFT
+FFT_grouped <- function(inDat, dv = "hr"){
+  #inDat = inZoneSOA$soaData; dv = "rt" # for testing
+  subs = unique(inDat$subject)
+  for (i in 1:length(subs)){
+    #i = 7 # for testing
+    Sub_ts = as.vector(as.matrix(filter(inDat,subject == subs[i])[,dv]))
+    Sub_fft = getSpec_pmp(Sub_ts, dtr = T, hw = T, output = "power", nSamp = 30, fq_wind = c(3,14))
+    #print(i)
+    if (i == 1){AllSub_fft = Sub_fft[[1]]} else {AllSub_fft = rbind(AllSub_fft,Sub_fft[[1]])}
+  }
+  rownames(AllSub_fft) <- subs
+  Mean_fft = apply(as.matrix(AllSub_fft),2,mean)
+  pldf = data.frame(hz=Sub_fft[[2]],pwr=Mean_fft)
+  plt = ggplot(pldf,aes(x=hz,y=pwr)) + geom_line() + scale_x_continuous(breaks = Sub_fft[[2]])
+  return(list(AllSub_fft=AllSub_fft,Mean_fft=Mean_fft,hz=Sub_fft[[2]],plt=plt))
+}
+# Perm distribution
+FFT_permutation_nd <- function(inDat, nPerm = 10, erTask = "M", dv = "hr", resid = T, NArm = T, lat = 0, seed = 18){
+  # for testing
+  # inDat = RetDat_v1; erTask = "M"; dv = "hr"; resid = F; nPerm = 3000; NArm = T; seed = 18
+  # exclude participants with no correct responses for some SOA's
+  origSubs = length(unique(inDat$subject))
+  fullSubs = suppressWarnings(unique(soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, 
+                                             rand = F, NArm = NArm, drp = T, lat = lat)[[1]]$subject))
+  inDat = inDat %>% filter(subject %in% fullSubs) 
+  print(paste(origSubs-length(unique(inDat$subject))," subjects dropped for this analysis",sep=""))
+  # set seed and  start timer
+  set.seed(seed)
+  start = Sys.time()
+  # Run permutations
+  for (i in 1:nPerm){
+    #i = 1  # for testing
+    # each while loop iteration, shuffle the SOA
+    soaDat_o = suppressWarnings(soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = T, 
+                                        NArm = NArm, drp = T, lat = lat))
+    soaDat = soaDat_o[[1]]; drpSub = soaDat_o[[2]]; drp_subids = soaDat_o[[3]] 
+    # If data was dropped, run another while loop until data not dropped (i.e. at least one correct resp per SOA)
+    if ( drpSub ){
+      subs = drp_subids
+      s = 0
+      for (subi in subs){
+        #subi = subs[1]
+        s = s + 1
+        subDat = inDat %>% filter(subject == subi)
+        #subDat$subject
+        drpSub_2 = T
+        while ( drpSub_2 ){
+          soaDat_sub = suppressWarnings(soa_avg(subDat, erTask = erTask, dv = dv, resid = resid, rand = T, 
+                                                NArm = NArm, drp = F, lat = lat))
+          soaDat_s = soaDat_sub[[1]]; drpSub_2 = soaDat_sub[[2]]
+          if (drpSub_2 == F){
+            if (s == 1){soaDat_sa = soaDat_s} else {soaDat_sa = rbind(soaDat_sa,soaDat_s)}
+          }
+        }
+      }
+      soaDat = rbind(soaDat,soaDat_sa)
+    }
+    # check SOAs
+    soaMM = c( min(soaDat$SOAcorr_ct, na.rm=T), max(soaDat$SOAcorr_ct, na.rm=T) )
+    if (length(checkSOA(soaDat, dv = dv, soaMM = soaMM)) != 0){ # break loop if some dropped subs
+        warning("Shuffled subjects have missing data when they should not")
+        break
+    } 
+    # get FFT
+    fftDat = FFT_grouped(soaDat, dv = dv)
+    spec = as.data.frame(t(fftDat[[2]])); colnames(spec) <- fftDat[[3]]
+    # bind
+    print(i)
+    if (i == 1){allPerms = spec} else {allPerms = rbind(allPerms,spec)} # bind the data
+  }
+  print( Sys.time() - start )
+  return(allPerms)
+}
+# test 
+#FFT_permutation_nd(bla, nPerm = 100, erTask = "M", dv = "rt", resid = T, NArm = T, seed = 18)
+
+# Perm distribution
+FFT_permutation <- function(inDat, nPerm = 10, erTask = "M", dv = "hr", resid = T, NArm = T, lat = 0){
+  # for testing
+  #rm(inDat)
+  #inDat = RetDat_v4_res; erTask = "M"; dv = "rt"; resid = T; nPerm = 10; NArm = T
+  # actual code
+  start = Sys.time()
+  for (i in 1:nPerm){
+    #i = 1
+    # shuffle SOA
+    soaDat = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = T, seed = i, 
+                     NArm = NArm, drp = T, lat = lat)
+    # get FFT
+    fftDat = FFT_grouped(soaDat[[1]], dv = dv)
+    spec = as.data.frame(t(fftDat[[2]])); colnames(spec) <- fftDat[[3]]
+    print(i)
+    # bind
+    if (i == 1){allPerms = spec} else {allPerms = rbind(allPerms,spec)} # bind the data
+  }
+  print( Sys.time() - start )
+  return(allPerms)
+}
+
+# test time difference and values for different perm methods
+# p1 = FFT_permutation(RetDat_v4_res, nPerm = 10, erTask = "M", dv = "rt", resid = T, NArm = T)
+# p2 = FFT_permutation_nd(RetDat_v4_res, nPerm = 10, erTask = "M", dv = "rt", resid = T, NArm = T)
+# apply(p1, 2, mean)
+# apply(p2[[1]], 2, mean)
+# p2[[2]]
+
+getStats <- function(PermSpecDists, a_avgSpc, nFreqs = seq(3,14), zStat = T, SIG = .05, jsPlt = F, n = 120){
+  # for testing
+  #PermSpecDists = inPerm; a_avgSpc = obsSpec; nFreqs = obsHz; zStat = T; SIG = .05; jsPlt = F; n = 120
+  # -------------------- get observed and critical values ---------------------
+  PermSpecDists = as.matrix(PermSpecDists)
+  # get the critical values
+  for (f in 1:length(PermSpecDists[1,])){
+    cv_a = critVal(mean(PermSpecDists[,f],na.rm=T),sd(PermSpecDists[,f]),1.65)   # observed value, mean, sd (1.65 for one sided cv, 1.96 for two sided cv and 95% CI)
+    if (f == 1){cvs_a = cv_a} else {cvs_a = c(cvs_a,cv_a)}
+  }
+  # --- create data frame for plots
+  #NFbins = length(3:(length(cvs_a)-1))
+  NFbins = length(nFreqs)
+  statDf <- data.frame(freq=nFreqs,cond=c(rep("obs",NFbins),rep("crit",NFbins)),
+                        vals=c(a_avgSpc,cvs_a))
+  # --------- specify the statistical method -------------
+  if (jsPlt == F){
+    
+    if (zStat == T){
+      
+      # get the z values and use to extract the p_values
+      for (i in 1:length(PermSpecDists[1,])){
+        z_hz = getZ(a_avgSpc[i],mean(PermSpecDists[,i]),sd(PermSpecDists[,i]))
+        p = pnorm(z_hz, lower.tail = FALSE)            # one sided test
+        #n = length(A_avgObsSpec[,1])
+        t = qt(1-p, n - 1)              # get t
+        re = sqrt(t^2/(t^2+(n-2)))  # compute r=equivalent
+        # aggregate values
+        if (i == 1){z_hz_a = z_hz} else {z_hz_a = c(z_hz_a,z_hz)}
+        if (i == 1){p_a = p} else {p_a = c(p_a,p)}
+        if (i == 1){re_a = re} else {re_a = c(re_a,re)}
+      }
+      # create data frame
+      pvDf = data.frame(Hz = nFreqs,  specAmp = round(a_avgSpc, digits = 4), zVals = round(z_hz_a, digits = 3), p = p_a, 
+                        re = round(re_a, digits = 3), fdr_p = 0)
+      # apply fdr correction
+      pvDf$fdr_p = p.adjust(pvDf$p, method = "fdr", n = length(pvDf$p))
+      
+    } else if (zStat == F){
+      
+      for (i in 1:length(PermSpecDists[1,])){
+        #i = 15
+        numAb = length(which(PermSpecDists[,i] > a_avgSpc[i]))
+        p = numAb/length(PermSpecDists[,1])
+        if (p == 0){p = 1/length(PermSpecDists[,1])}  # if p is zero, make it the lowest it could possibly be
+        #n = length(A_avgObsSpec[,1])
+        t = qt(1-p, n)              # get t
+        re = sqrt(t^2/(t^2+(n-2)))  # compute r=equivalent
+        if (i == 1){p_a = p} else {p_a = c(p_a,p)}
+        if (i == 1){re_a = re} else {re_a = c(re_a,re)}
+        #print(i)
+  
+      }
+      # create data frame
+      pvDf = data.frame(Hz = nFreqs,  specAmp = round(a_avgSpc, digits = 4), p = p_a, 
+                        re = round(re_a, digits = 3), fdr_p = 0)
+      # apply fdr correction
+      pvDf$fdr_p = p.adjust(pvDf$p, method = "fdr", n = length(pvDf$p))
+      
+    }
+    # Create list of all the data
+    allOutDat = list(statDf,pvDf)
+    
+  } else if (jsPlt == T){
+    pvDf_c = data.frame(none=0)
+    allOutDat = list(statDf,pvDf)
+  }
+  # return the data
+  return(allOutDat) 
+}
+
+# function to make a plot
+mkFFT_plot <- function(inDat){
+  plt <- ggplot(inDat, aes(x=freq,y=vals,color=cond)) + 
+  geom_line() + scale_x_continuous(n.breaks = 12)
+  return(plt)
+}
+
+# full analysis wrapper
+FFT_analysis <- function(inDat = RetDat_v4_res, inPerm = mem_hr, erTask = "M", dv = "hr", resid = T, 
+                         NArm = F, zStat = T, lat = 0){
+  # for testing
+  #inDat = RetDat_v4_res; inPerm = mem_ies; erTask = "M"; dv = "ies"; resid = T; zStat = T; n = 125
+  # get average by SOA
+  soaDat = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = NArm, drp = T, lat = lat)[[1]]
+  # get FFT
+  fftDat = FFT_grouped(soaDat, dv = dv)
+  obsSpec = fftDat[[2]]
+  obsHz = fftDat[[3]]
+  # compute stats
+  results = getStats(inPerm, obsSpec, nFreqs = obsHz, zStat = zStat, 
+                     SIG = .05, jsPlt = F, n = length(unique(inDat$subject)))
+  plt = mkFFT_plot(results[[1]])
+  return(list(plt,results,soaDat))
+}
+
+# plotting function
+FFT_plot <- function(statDf, ylinRg = c(.07,.11), ar = 200, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("maroon3","grey70"), lines = c("solid", "dashed"), 
+                              titName="FFT Permutation Test", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "plain"){
+    # for testing
+    # statDf = memFFT; ylinRg = c(9,14); ar = 2; ln_size = 1; titSiz = 13; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8 
+    # colors = c("maroon3","maroon4","maroon1"); lines = c("dashed","solid"); labels = c("HR", "RT",'IES') 
+    # titName="FFT Permutation Test"; yAxLab="Spectral Power (AU)"; xAxLab="Frequency (Hz)"
+    # fc = "plain"; lgndU = 1; lgnd_pz = "right"; lgndTit = "DV"; lgndTxt = 8; lgTitsz = 8
+                              
+    plt = ggplot(statDf, aes(x=freq, y=vals, group=cond)) +
+    geom_line(aes(color=cond, linetype=cond), size=ln_size) + scale_y_continuous(n.breaks = 14) +
+    scale_x_continuous(breaks=3:14) +
+    theme_classic() +
+    scale_color_manual(values=colors) +
+    scale_linetype_manual(values=lines) +
+    theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5)) +
+    labs(y= yAxLab, x = xAxLab) + ggtitle(titName) + theme(legend.position="none") +
+    ylim(ylinRg) + coord_fixed(ratio = ar) #+ guide_legend(title=lgndTit)
+    return(plt)
+}
+
+# plotting function
+FFT_plot_mlt <- function(statDf, ylinRg = c(.07,.11), ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("maroon1","maroon2","grey70"), 
+                              lines = c("solid", "solid","dashed"), labels = c("Mem", "Cls",'CV'), 
+                              titName="FFT Permutation Test", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "plain", lgndU = 1, lgnd_pz = "right", lgndTit = "DV", lgndTxt = 8, lgTitsz = 8, y_scl = 14){
+    # for testing
+    # statDf = memFFT; ylinRg = c(9,14); ar = 2; ln_size = 1; titSiz = 13; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8
+    # colors = c("maroon3","maroon4","maroon1"); lines = c("dashed","solid"); labels = c("HR", "RT",'IES')
+    # titName="FFT Permutation Test"; yAxLab="Spectral Power (AU)"; xAxLab="Frequency (Hz)"
+    # fc = "plain"; lgndU = 1; lgnd_pz = "right"; lgndTit = "DV"; lgndTxt = 8; lgTitsz = 8
+                              
+    plt = ggplot(statDf, aes(x=freq, y=vals, fill=cond)) +
+    geom_line(aes(color=dv, linetype=cond), size=ln_size) + scale_y_continuous(n.breaks = y_scl) +
+    scale_x_continuous(breaks=3:14, expand = expansion(mult = 0, add = 0)) +
+    theme_classic() +
+    scale_color_manual(values=colors,labels=labels,name=lgndTit) +
+    scale_linetype_manual(values=lines,labels=labels,name=lgndTit) +
+    theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.key.size = unit(lgndU,'cm'),legend.text=element_text(size=lgndTxt),legend.position=lgnd_pz,
+      legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab) + ggtitle(titName) + 
+    ylim(ylinRg) + guides(linetype="none") # + coord_fixed(ratio = ar) 
+    #plt
+    return(plt)
+}
+
+```
+
+# Power difference functions - mem vs class
+
+```{r}
+# function to get the power difference
+# function to get group power difference
+avg_mVc_pwrDiff <- function(encIn, retIn, dv = "hr", resid = T, lat = 0){
+  # for testing
+  #encIn = EncDat_v4_res; retIn = RetDat_v4_res; dv = "rt"; resid = T; plt = T
+  # enc spec amp
+  soaDat_cls = soa_avg(encIn, erTask = "C", dv = dv, resid = resid, rand = F, NArm = T, drp = T, lat = lat)
+  fftDat_cls_f = FFT_grouped(soaDat_cls$soaData, dv = dv)
+  fftDat_cls = fftDat_cls_f$AllSub_fft
+  # ret spec amp
+  soaDat_mem  = soa_avg(retIn, erTask = "M", dv = dv, resid = resid, rand = F, NArm = T, drp = T, lat = lat)
+  fftDat_mem_f = FFT_grouped(soaDat_mem$soaData, dv = dv)
+  fftDat_mem = fftDat_mem_f$AllSub_fft
+  # if different subjects dropped - select the common subjects
+  if (length(rownames(fftDat_cls)) > length(rownames(fftDat_mem))){
+    sameSubs = rownames(fftDat_cls)[ which( !is.na( match(rownames(fftDat_cls),rownames(fftDat_mem)) ) ) ]
+    fftDat_cls =  fftDat_cls[rownames(fftDat_cls) %in% sameSubs, ]; fftDat_mem =  fftDat_mem[rownames(fftDat_mem) %in% sameSubs, ]
+    chMatch = match(rownames(fftDat_cls),rownames(fftDat_mem))
+  } else {
+    sameSubs = rownames(fftDat_mem)[ which( !is.na( match(rownames(fftDat_mem),rownames(fftDat_cls)) ) ) ]
+    fftDat_cls =  fftDat_cls[rownames(fftDat_cls) %in% sameSubs, ]; fftDat_mem =  fftDat_mem[rownames(fftDat_mem) %in% sameSubs, ]
+    chMatch = match(rownames(fftDat_mem),rownames(fftDat_cls))
+  }
+  print(paste(length(sameSubs)," common subjects not dropped",sep=""))
+  # Check if the subjects match
+  if (any(is.na(chMatch))){warning("Memory and classification not same length")}
+  # compute the difference matrix
+  fftDat_diff = fftDat_mem-fftDat_cls
+  fftDat_diff_mn = apply(fftDat_diff, 2, mean)
+  # plot
+  hz = fftDat_mem_f$hz
+  pldf = data.frame(hz=hz,pwr=fftDat_diff_mn)
+  plt = ggplot(pldf, aes(x = hz, y = pwr)) + geom_line() + scale_x_continuous(n.breaks = 12)
+  # print results
+  return(list(diffMat=fftDat_diff, meanDiff=fftDat_diff_mn,hz=hz,plt=plt))
+}
+# test
+#avg_mVc_pwrDiff(EncDat_v4_res, RetDat_v4_res, dv = "hr", resid = T)
+
+# compute surrogate dists
+surr_mVc_pwrDiff <- function(encIn, retIn, nPerms = 10, dv = "hr", lat = 0, resid = T, seed = 18){
+  # for testing
+  #encIn = EncDat_v4_res; retIn = RetDat_v4_res; nPerms = 10; dv = "hr"; resid = T
+  # actual code
+  fftDat_diff = avg_mVc_pwrDiff(encIn, retIn, dv = dv, lat = lat, resid = resid)$diffMat
+  set.seed(seed)
+  # get polarity vector (the proper length)
+  if (dim(fftDat_diff)[1] %% 2 == 0){
+    polary = rep(c(1,-1),length(fftDat_diff[,1])/2)
+  } else {
+    polary = c(rep(c(1,-1),length(fftDat_diff[,1])/2),1)
+  }
+  # for loop for perm testing
+  start = Sys.time()
+  for (permi in 1:nPerms){
+    #permi = 1
+    randPol = sample(polary)
+    randMat = cbind(randPol,randPol,randPol,randPol,randPol,randPol,randPol,randPol,randPol,randPol,randPol,randPol)
+    randPolMat = fftDat_diff*randMat
+    mean_mvc_diff = apply(randPolMat, 2, mean) 
+    print(permi)
+    if (permi == 1){all_mean_mvc_diff = mean_mvc_diff} else {all_mean_mvc_diff = rbind(all_mean_mvc_diff,mean_mvc_diff)}
+  }
+  print( Sys.time() - start )
+  return(all_mean_mvc_diff)
+}
+
+# two tailed perm p function
+tt_permP <- function(inPerm, obs){
+  # for testing
+  #obs = mem_v_cls_hr_obs_eg[[1]][1]; inPerm = as.vector(mem_v_cls_hr_pd_eg[,1])
+  # code
+  #p = sum(abs(obs) <= abs(inPerm))/length(inPerm)
+  p = mean(abs(obs) <= abs(inPerm))
+  return(p)
+}
+
+# new stats function
+getStats_cd <- function(permD, obsD, hz = 3:14){
+  # for testing
+  #permD = mem_v_cls_hr_pd; obsD = mem_v_cls_hr_obs[[1]]; hz = 3:14
+  # actual code
+  p_vals = 0; lb = 0; ub = 0; hz = 3:14; NFbins = length(3:14)
+  for (f in 1:length(permD[1,])){
+    p_vals[f] <- tt_permP(as.vector(permD[,f]), obsD[f])
+    lb[f] <- quantile(permD[,f], probs=c(.025, .975), na.rm = FALSE)[1]
+    ub[f] <- quantile(permD[,f], probs=c(.025, .975), na.rm = FALSE)[2]
+  }
+  data_df = data.frame(hz = hz, pwr = obsD, p_vals=p_vals,
+                       p_fdr=p.adjust(p_vals, method = "fdr", n = length(p_vals)), lb=lb,ub=ub)
+  plot_df = data.frame(freq=rep(3:14,3),cond=c(rep("obs",NFbins),rep("crit_lb",NFbins),rep("crit_ub",NFbins)),
+                          vals=c(obsD,lb,ub))
+  return(list(plot_df,data_df))
+}
+
+# function to make a comparative plot with two colors
+mkCompSPD_2t_plot_v2 <- function(inDat,ylinRg = c(.07,.11), ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, fc = "plain",
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", titName="Oscillations Modulated by Sustained Attention", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)"){
+  # modify data
+  mcStats_orig = inDat[[1]]
+  obsCopy = mcStats_orig %>% filter(cond == "obs")
+  obsCopy$cond <- "obs2"
+  mcStats_new = rbind(obsCopy,mcStats_orig)
+  mcStats_new
+  # make plot
+  plt <- ggplot(mcStats_new, aes(x=freq,y=vals,group=cond,color=cond)) + 
+    geom_line(aes(color=cond,linetype=cond),size=ln_size) + 
+    scale_x_continuous(n.breaks = 13,expand = expansion(mult = 0, add = 0)) +
+    scale_color_manual(values=c("grey","grey",lnColor1,lnColor2)) +
+    scale_linetype_manual(values=c("dashed","dashed","solid","dashed")) +
+    theme_classic() +
+    theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face=fc, margin = margin(b = 2))) +  # , color = lnColor
+    labs(y= yAxLab, x = xAxLab) + ggtitle(titName) + theme(legend.position="none") +
+    ylim(ylinRg) + #coord_fixed(ratio = ar) + 
+    geom_hline(yintercept=0,linetype="dashed",color="black",size=ln_size)
+  return(plt)
+}
+
+```
+
+# Time-frequency power analysis
+
+Core functions
+
+```{r}
+# for testing
+# testSubs_o = soa_avg(RetDat_v4_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)
+# testSubs = testSubs_o[[1]]
+# testSub = testSubs %>% filter(subject == unique(testSubs$subject)[4])
+# testSub
+
+# New Function to use CONTINUOUS shift in cycle widths across frequency bands 
+TFA_refl_cont <- function(inSig, refl = F, edge = 0, fq_lb = 3, fq_ub = 7, dv = "hr", spc = "linear", xscl = 8, yscl = 8){  
+  # for testing
+  #inSig = testSub; refl = T; HW = F; ZP = F; edge = 8; subNum = 2; fq_lb = 3; fq_ub = 7; spc = "linear"; dv = "hr"; xscl = 8; yscl = 8
+  # actual code
+  ts_dat = as.vector(as.matrix(inSig[,dv]))                 # convert data to vector
+  soa = c(min(inSig$SOAcorr_ct),max(inSig$SOAcorr_ct))      # select min and max SOA
+  subid = unique(inSig$subject)                             # get subject ID
+  # set parameters
+  cyc_vals = c(fq_lb,fq_ub); fqBd = c(3,14); nfb = length(fqBd[1]:fqBd[2])         # get cycle values and frequency range
+  t = round(seq(soa[1],soa[2],by=1000/30),2); detr = detrend(ts_dat, wav=t, p = 2) # get time data and detrend
+  nRfTs = c(rev(detr)[1:27],detr,rev(detr)[2:28])                                  # code to reflect the TS
+  t2 = c(seq(soa[1]-(soa[2]-soa[1]),soa[2]+(soa[2]-soa[1]),by=1000/30))               # get reflected time domain info
+  # specify parameters if reflection is true
+  if (refl == T){inSigFin = nRfTs; tv = t2} else {inSigFin = detr; tv = t}
+  # do Morlet decomp - using EEGUtils <https://craddm.github.io/eegUtils/articles/time-frequency-analysis.html>
+  eegdat = suppressMessages(eeg_epochs(data=tibble(inSigFin),                                    # set parameters
+                     srate=30,
+                     events=tibble(event_onset=1,event_time=0,event_type=1,epoch=1,time=0),
+                     chan_info=NULL,
+                     timings=tibble(epoch=1,sample=seq(1,length(inSigFin)),time=tv),
+                     epochs=tibble(epoch=1,recording=NA,epoch_lable=NA,participant_id=001),
+                     reference=NA))
+  tfr = compute_tfr(data=eegdat,method = "morlet", foi=fqBd, spacing = spc,                      # run time-frequency analysis
+                    n_freq = nfb, n_cycles = cyc_vals)
+  # extract and organize the raw values
+  rawVals = tfr$signals 
+  for (i in 1:length(inSigFin)){rVec = rawVals[1,i,1,1:nfb]; if (i == 1){allr = rVec} else {allr = rbind(allr,rVec)}}
+  rownames(allr) <- round(tv[1:length(inSigFin)],2)                                   # rename rows based on SOA bin number
+  if (refl == T){t_slice = allr[paste(t,sep=""),] } else {t_slice = allr}             # if reflecting, slice off reflected time points
+  allDat = apply(t(t_slice),2,rev)                                                    # rotate matrix 90 degrees for better alignment
+  allDat = allDat[,(edge+1):(length(allDat[1,])-edge)]                                # cutoff edges
+  # Make plots
+  titSinf = paste("subject ID = ",subid,", cycs",cyc_vals[1],"-",cyc_vals[2],", refection = ",refl,sep="")  # title speicying details
+  df = reshape2::melt(allDat)
+  if (spc == "linear"){
+    tfr_plot1 <- ggplot(df, aes(Var2, Var1)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(n.breaks = yscl) + scale_x_continuous(n.breaks=xscl) + ggtitle(titSinf)
+  } else if (spc == "log"){
+    tfr_plot1 <- ggplot(df, aes(Var2, Var1)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(trans = "log2", n.breaks = 8) + scale_x_continuous(n.breaks=8) + ggtitle(titSinf)
+  }
+  # print results
+  results = list(plt=tfr_plot1,data=allDat,subid=subid)
+  return(results)
+}
+
+# test function
+#TFA_refl_cont(testSub, refl = T, edge = 0, fq_lb = 3, fq_ub = 7, dv = "hr", spc = "linear")
+
+# Create the function for time frequency analysis across subjects
+avgTFA <- function(inDat, REF = F, EDG = 0, FQ_lb = 3, FQ_ub = 7, dv = "hr", spc = "linear", subPlt = T, xscl = 8, yscl = 8){
+  # # for testing
+  #inDat = testSubs; REF = T; EDG = 7; FQ_lb = 3; FQ_ub = 7; cont = T; spc = "linear"; dv = "hr"; subPlt = T
+  # Subject for loop
+  subs = unique(inDat$subject)
+  for (i in 1:length(subs)){
+    #subi = subs[1]
+    subDat = inDat %>% filter(subject == subs[i])                                                                                                 # select subject
+    tfa_sub = suppressMessages(suppressWarnings(TFA_refl_cont(subDat, refl = REF, edge = EDG, fq_lb = FQ_lb, fq_ub = FQ_ub, dv = dv, spc = spc, xscl = xscl, yscl = yscl))) # get TFA
+    tfa_sub_dat = tfa_sub[[2]]; if (subPlt == T) {print(tfa_sub[[1]])}                                                                            # plot all subjects
+    tF_dat = as.matrix(as.data.frame(tfa_sub_dat))
+    if (i == 1){d3_dat = tF_dat} else {d3_dat = array(c(d3_dat,tF_dat), dim = c(length(tF_dat[,1]),length(tF_dat[1,]),i))} # bind 3d array
+  }
+  # average the time-frequency matrices across the subject dimension of the array
+  avgTF = matrix(ncol = dim(tF_dat)[2], nrow = dim(tF_dat)[1]) # col (x) = time, row (y) = frequency
+  for (y in 1:dim(tF_dat)[1]){    # frequency
+    for (x in 1:dim(tF_dat)[2]){  # time
+      #x = 1; y = 1
+      avgTF[y,x] <- mean(d3_dat[y,x,])
+    }
+  }
+  # organize output
+  avgTF_df = as.data.frame(avgTF); nfq = length(avgTF_df[,1])  # rename rows and columns
+  soa = c(min(subDat$SOAcorr_ct),max(subDat$SOAcorr_ct))       # get min and max SOA
+  rownames(avgTF_df) <- (nfq+2):3                              # rename rows - fq
+  colnames(avgTF_df) <- round(seq(soa[1],soa[2],by=1000/30)[(EDG+1):(length(seq(soa[1],soa[2],by=1000/30))-EDG)],3)  # rename columns = time
+  # Make plots
+  alltf = t(avgTF_df); dfA = reshape2::melt(alltf)
+  if (spc == "linear"){
+    avgPlot <- ggplot(dfA, aes(Var1, Var2)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(n.breaks = yscl) + scale_x_continuous(n.breaks=xscl)  
+  } else if (spc == "log"){
+    avgPlot <- ggplot(dfA, aes(Var1, Var2)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(trans = "log2", n.breaks = yscl) + scale_x_continuous(n.breaks=xscl)  
+  }
+  # give results
+  results = list(plt=avgPlot,data_DF=avgTF_df,data=d3_dat)
+  #results
+  return(results)
+}
+# test
+#obsTFA = avgTFA(SOAdat, REF = T, EDG = 7, FQ_lb = 3, FQ_ub = 7, dv = "hr", spc = "linear", subPlt = T)
+
+# the function
+TFA_perm <- function(inDat, nPerm = 2, REF = F, EDG = 0, FQ_lb = 3, FQ_ub = 7, erTask = "M", dv = "hr", resid = T, spc = "linear"){
+  # parameters for testing
+  #inDat = RetDat_v4_res; nPerm = 10; REF = T; EDG = 7; FQ_lb = 3; FQ_ub = 7; dv = "hr"; resid = T; spc = "linear" 
+  # Permutation for loop
+  start = Sys.time()
+  for (i in 1:nPerm){
+    #i = 1 # for testing
+    AllSubSOA_surr = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = T)                                # shuffle SOA for all subjects
+    AvgTFA_surr = suppressWarnings(avgTFA(AllSubSOA_surr[[1]], REF = REF, EDG = EDG, FQ_lb = FQ_lb, FQ_ub = FQ_ub, 
+                                          dv = dv, spc = spc, subPlt = F)[[2]]) # get average TFA
+    tfa_smat = as.matrix(AvgTFA_surr)
+    if (i == 1){d3_sdat = tfa_smat} else {d3_sdat = array(c(d3_sdat,tfa_smat), dim = c(length(tfa_smat[,1]),length(tfa_smat[1,]),i))}  # bind across i
+    print(i)
+  }
+  print( Sys.time() - start ) # Stop the clock
+  d2_sDat = reshape2::melt(d3_sdat) # convert the 3d data to 2d form
+  return(list(meltDat=d2_sDat,rawDat=d3_sdat))
+}
+
+# Perm distribution
+TFA_perm_nd <- function(inDat, nPerm = 10, erTask = "M", dv = "hr", resid = T, NArm = T, seed = 18, lat = 0,
+                        REF = F, EDG = 0, FQ_lb = 3, FQ_ub = 7, spc = "linear"){
+  # for testing
+  #inDat = RetDat_v4_res; erTask = "M"; dv = "rt"; resid = F; nPerm = 3000; NArm = T; seed = 18
+  #rm(inDat)
+  #REF = T; EDG = 8; FQ_lb = 3; FQ_ub = 7; spc = "linear"
+  # exclude participants with no correct responses for some SOA's
+  origSubs = length(unique(inDat$subject))
+  fullSubs = suppressWarnings(unique(soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, 
+                                             rand = F, NArm = NArm, drp = T, lat = lat)[[1]]$subject))
+  inDat = inDat %>% filter(subject %in% fullSubs) 
+  print(paste(origSubs-length(unique(inDat$subject))," subjects dropped for this analysis",sep=""))
+  # set seed and  start timer
+  set.seed(seed)
+  start = Sys.time()
+  # Run permutations
+  for (i in 1:nPerm){
+    #i = 1  # for testing
+    # each while loop iteration, shuffle the SOA
+    soaDat_o = suppressWarnings(soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = T, NArm = NArm, drp = T))
+    soaDat = soaDat_o[[1]]; drpSub = soaDat_o[[2]]; drp_subids = soaDat_o[[3]] 
+    # If data was dropped, run another while loop until data not dropped (i.e. at least one correct resp per SOA)
+    if ( drpSub ){
+      subs = drp_subids
+      s = 0
+      for (subi in subs){
+        #subi = subs[1]
+        s = s + 1
+        subDat = inDat %>% filter(subject == subi)
+        #subDat$subject
+        drpSub_2 = T
+        while ( drpSub_2 ){
+          soaDat_sub = suppressWarnings(soa_avg(subDat, erTask = erTask, dv = dv, resid = resid, rand = T, NArm = NArm, drp = F))
+          soaDat_s = soaDat_sub[[1]]; drpSub_2 = soaDat_sub[[2]]
+          if (drpSub_2 == F){
+            if (s == 1){soaDat_sa = soaDat_s} else {soaDat_sa = rbind(soaDat_sa,soaDat_s)}
+          }
+        }
+      }
+      soaDat = rbind(soaDat,soaDat_sa)
+    }
+    #length(unique(soaDat$subject))
+    # check SOAs
+    soaMM = c( min(soaDat$SOAcorr_ct, na.rm=T), max(soaDat$SOAcorr_ct, na.rm=T) )
+    if (length(checkSOA(soaDat, dv = dv, soaMM = soaMM)) != 0){ # break loop if some dropped subs
+        warning("Shuffled subjects have missing data when they should not")
+        break
+    } 
+    # get FFT
+    AvgTFA_surr = suppressWarnings(avgTFA(soaDat, REF = REF, EDG = EDG, FQ_lb = FQ_lb, FQ_ub = FQ_ub, 
+                                          dv = dv, spc = spc, subPlt = F)[[2]]) # get average TFA
+    tfa_smat = as.matrix(AvgTFA_surr)
+    if (i == 1){d3_sdat = tfa_smat} else {d3_sdat = array(c(d3_sdat,tfa_smat), dim = c(length(tfa_smat[,1]),length(tfa_smat[1,]),i))}  # bind across i
+    # bind
+    print(i)
+    #if (i == 1){allPerms = spec} else {allPerms = rbind(allPerms,spec)} # bind the data
+  }
+  d2_sDat = reshape2::melt(d3_sdat)
+  print( Sys.time() - start )
+  return(list(rawDat=d3_sdat,meltDat=d2_sDat))
+}
+# test 
+#testPerm = TFA_perm(RetDat_v4_res, nPerm = 500, REF = T, EDG = 7, FQ_lb = 3, FQ_ub = 7, erTask = "M", dv = "hr", resid = T, spc = "linear")
+#testPerm$rawDat
+#testPerm_ac = acast(d2_datBack, Var1~Var2~Var3)
+
+# function to re-load a permutation distribution and re-cast it
+getPdDist <- function(pdPath = pd_path, distName = "RasRt_tfa_pd2.csv"){
+  # for testing
+  # pd_path = "/Users/thomasbiba/Desktop/Toronto/Projects/HippOrTheta/MemBehavOscil/TFA_permDists/"; distName = "RasRt_tfa_pd2.csv"
+  # load and re-cast (i.e. unmelt)
+  d2_datBack = as.data.frame(read_csv(paste(pdPath,distName,sep="")))
+  d3_datBack = reshape2::acast(d2_datBack, Var1~Var2~Var3)
+  return(d3_datBack)
+}
+
+# Create a function to estimate significance
+getCV <- function(inDat, z=1.96){
+  # testing 
+  #inDat = tfa_mem_rt_pd; z=1.96
+  # actual code
+  d3Dims = dim(inDat)                                 # specify the dimensions of the array (to use for indexing)
+  cvMat = matrix(ncol = d3Dims[2], nrow = d3Dims[1])  # create a matrix of critical values
+  for (fq in 1:d3Dims[1]){
+    #fq = 1
+    for (soa in 1:d3Dims[2]){
+      #soa = 1
+      vecPD = inDat[fq,soa,1:d3Dims[3]]                   # index a vector of permutation values for a cell in the 3d array
+      cvMat[fq,soa] <- critVal(mean(vecPD),sd(vecPD),z)   # pipe critical value into matrix
+    }
+  }
+  return(cvMat)
+}
+
+# Create a function to plot the values above chance
+cmpPlt_cvDiff <- function(critVals, obsVals, xscl = 8, yscl = 8){
+  # for testing
+  #critVals = memRT_cv; obsVals = memRT_avgTFA[[2]]
+  # compute matrix and make plot
+  cntMat = obsVals - critVals           # subtract the critical values from the observed values 
+  cntMat_df = as.data.frame(cntMat)
+  alltf = t(cntMat_df)
+  dfA = reshape2::melt(alltf)
+  avgPlot <- ggplot(dfA, aes(Var1, Var2, color=value)) +
+    geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+    scale_y_continuous(n.breaks = yscl) + scale_x_continuous(n.breaks=xscl) +
+    scale_fill_gradient2(midpoint=0, low="blue", mid="green",
+                       high="red", space ="Lab" )
+  results = list(cntMat,avgPlot)
+  return(results)
+}
+
+# Create a function to compute the z and p values
+getZndP <- function(perDists,avgObsVals, lowTail = F){
+  # for testing ,
+  #perDists = permDist; avgObsVals = obsTFA[[2]];  lowTail = F
+  # specify dimensions of the permutation distribution array
+  dims = dim(perDists)
+  zMat = matrix(nrow = dims[1], ncol = dims[2])
+  pMat = matrix(nrow = dims[1], ncol = dims[2])
+  for (fq in 1:dims[1]){
+    for (ti in 1:dims[2]){
+      #ti = 1; fq = 1 # for testing
+      pdVec = perDists[fq,ti,1:dims[3]]                     # frequency, time, permutation
+      z_hz = getZ(avgObsVals[fq,ti],mean(pdVec),sd(pdVec))  # compute z value
+      zMat[fq,ti] <- z_hz
+      pMat[fq,ti] <- pnorm(z_hz, lower.tail = lowTail)      # two sided test > 2*pnorm(-abs(z_hz)) 
+    }
+  }
+  results = list(zMat,pMat)
+  return(results)
+}
+# test
+#zp_test = getZndP(testPerm$rawDat,obsTFA[[2]])
+
+# function to get max cluster size, indecies and z values
+getMaxInf <- function(ZndPf, queen = F){
+  # for testing
+  #ZndPf = zp_test
+  # actual code
+  binDat = ifelse(ZndPf[[2]] < .05, 1,0) # binarize the p-values
+  sigCells = which(binDat == 1)          # select which cells are significant
+  # if there is at least one cluster
+  if (any(binDat == 1) == T){
+    binDat_im = as.cimg(binDat)                                         # convert to image
+    labels = label(binDat_im, high_connectivity = queen, tolerance = 0) # label clusters
+    #plot(labels)
+    # identify which clusters are "real" (i.e. actually the above chance cells)
+    blankMat = matrix(nrow = dim(binDat)[1], ncol = dim(binDat)[2])
+    cells = data.frame(vals = labels[sigCells], cells = sigCells)
+    for (i in 1:length(cells$vals)){   # impute the sig cells and their cluster identity
+      #i = 1
+      cInd = cells$cells[i]; cVal = cells$vals[i]; blankMat[cInd] <- cVal
+    }
+    nClus = na.omit(unique(as.vector(blankMat)))[[1]]  # new code (omits non-sig clusters coded as NA)
+    # compute cluster size
+    clusDat = data.frame(num=nClus,size=0)
+    c = 0
+    for (clusi in nClus){
+      #clusi = nClus[1]
+      c = c + 1
+      clusDat$size[c] <- length(which(labels == clusi))
+    }
+    # select largest cluster
+    lrgCls = clusDat[which(clusDat$size == max(clusDat$size)),]$num  # largest cluster
+    clsInd = which(labels == lrgCls)  # get cluster indecies
+    clsSize = length(clsInd)
+    # get the z values from the cluster
+    zVals = ZndPf[[1]][clsInd]
+  } else if (any(binDat == 1) == F){    # otherwise if no clusters
+    clsSize = 0
+    zVals = 0
+  }
+  # combine output
+  outDat = list(clsSize,zVals)
+  return(outDat)
+}
+
+# Function to create the distribution of cluster info
+getClustDat <- function(perDists, queen = F){
+  # for testing
+  #perDists = tfa_mem_ies_pd
+  # actual code
+  pd_Dims = dim(perDists)
+  for (i in 1:pd_Dims[3]){ # iterate through permutations
+    #i = 2 # for testing
+    ZndP = getZndP(perDists,perDists[,,i]); clusInf = getMaxInf(ZndP, queen = queen)     # get z, p, and max cluster size and z
+    clsSz = clusInf[[1]]; avgZ = mean(clusInf[[2]]); clsWt = clsSz * avgZ # get cluster wieght
+    #clsSm = sum(clusInf[[2]])
+    if (i == 1){
+      a_clsSz = clsSz; a_avgZ = avgZ
+      a_clsWt = clsWt #; a_clsSm = clsSm
+    } else {
+      a_clsSz = c(a_clsSz,clsSz); a_avgZ = c(a_avgZ,avgZ)    
+      a_clsWt = c(a_clsWt,clsWt) #; a_clsSm = c(a_clsSm,clsSm)
+    }
+    #print(i)
+  }
+  # return the values
+  outDat = list(size=a_clsSz,z=a_avgZ,wt=a_clsWt) #,sum=a_clsSm)
+  return(outDat)
+}
+# test
+#clusTest = getClustDat(tfa_mem_hr_pd)
+
+# function to get all cluster observed sizes, idecies and z values
+getAllInf <- function(ZndPf, queen = F){
+  # for testing
+  #ZndPf = zp_test; queen = F
+  # Actual code
+  binDat = ifelse(ZndPf[[2]] < .05, 1,0) # binarize the p-values
+  sigCells = which(binDat == 1)
+  # if there is at least one cluster
+  if (any(binDat == 1) == T){
+    binDat_im = as.cimg(binDat)                                          # convert to image
+    labels = label(binDat_im, high_connectivity = queen, tolerance = 0)  # label clusters
+    # identify which clusters are "real" (i.e. actually the above chance cells)
+    blankMat = matrix(nrow = dim(binDat)[1], ncol = dim(binDat)[2])
+    cells = data.frame(vals = labels[sigCells], cells = sigCells)
+    # impute the sig cells and their cluster identity
+    for (i in 1:length(cells$vals)){   
+      #i = 1
+      cInd = cells$cells[i]; cVal = cells$vals[i]; blankMat[cInd] <- cVal
+    }
+    # get the non-NA clusters
+    nClus_a = unique(as.vector(blankMat))  # new code (omits non-sig clusters coded as NA)
+    nClus = nClus_a[which(is.na(nClus_a) == F)]
+    # Get the cluster size for each cluster
+    clusDat = data.frame(num=nClus,size=0)
+    c = 0
+    for (clusi in nClus){
+      #clusi = nClus[1]
+      c = c + 1; clusDat$size[c] <- length(which(labels == clusi))
+    }
+    # Get the weighted cluster size - by z value
+    AllCls = clusDat %>% arrange(size)     # new code (no longer needs to omit large cluster - which wasn't a real significant cluster before)
+    AllCls$wt <- 0
+    clusts = AllCls$num
+    c = 0
+    for (clusi in clusts){
+      c = c + 1
+      clsInd = which(labels == clusi)    # get cluster indices
+      clsSize = length(clsInd)           # get the cluster size
+      MnZvals = mean(ZndPf[[1]][clsInd]) # get the mean z values from the cluster
+      wtVal = clsSize * MnZvals          # get the weighted value 
+      AllCls$wt[c] = wtVal               # impute the wieght
+    }
+  } else if (any(binDat == 1) == F){    # otherwise if no clusters make empty vals
+    AllCls = data.frame(num=0,size=0,wt=0)
+    blankMat = matrix(nrow = dim(binDat)[1], ncol = dim(binDat)[1])
+  }
+  # combine output
+  #outDat = list(AllCls,labels)  # as.matrix(labels) -- old code. labels did not rule out non-sig clusters
+  outDat = list(AllCls,blankMat)  # blank mat carries the real cluster lables (non-sig cells = NA)
+  return(outDat)
+}
+
+# function to compare observed clusters to critical cluster threshold
+clusMPC <- function(perDists,obsMatZnP, queen = F, clus_plt_p = .06, soa = c(200,1100), edg = 8, xscl = 8, yscl = 8){
+  # for testing
+  #perDists = tfa_mem_ies_pd; obsMatZnP = zp_test; queen = F; clus_plt_p = .06; soa = c(200,1100); edg = 8; xscl = 4; yscl = 8
+  # get critical cluster info
+  critClusIn = getClustDat(perDists, queen = queen)[[3]]        # get weighted cluster value
+  critClus = quantile(critClusIn, 0.95)                         # get critical value
+  # get observed cluster info
+  obsClusts = getAllInf(obsMatZnP, queen = queen)
+  ClusVals = obsClusts[[1]]
+  ClusMap = obsClusts[[2]]
+  # find the above chance clusters
+  ClusVals$critDiff <- 0; ClusVals$cls_pval <- 0; c = 0; ClusVals$critVal = critClus; plts = list()
+  for (wti in ClusVals$wt){
+    #wti = ClusVals$wt[2]
+    c = c + 1
+    ClusVals$critDiff[c] = wti - critClus
+    ClusVals$cls_pval[c] = length(which(sort(critClusIn) > wti))/length(critClusIn)
+    # make cluster sig plot
+    pldf = data.frame(surrClus_wt=critClusIn)
+    sigClus_plt = ggplot(pldf, aes(x=surrClus_wt)) + geom_histogram() + 
+      geom_vline(xintercept = critClus, color = "grey") + geom_vline(xintercept = ClusVals$wt, color = "blue") +
+      ggtitle(paste("p = ",round(ClusVals$cls_pval,3),sep=""))
+    plts[[c]] <- sigClus_plt
+  }
+  # if there are above chance clusters then plot them
+  if (any(ClusVals$cls_pval < clus_plt_p) == T){
+    sigClusts = filter(ClusVals, cls_pval < clus_plt_p)
+      # Create a mask for above chance clusters
+    clsSigMask = matrix(nrow=dim(ClusMap)[1],ncol=dim(ClusMap)[2],NA)
+    for (clsNi in sigClusts$num){
+      #clsNi = sigClusts$num[1]
+      clsInds = which(ClusMap == clsNi)
+      for (i in 1:length(clsSigMask)){if (any(clsInds == i)){clsSigMask[i] <- obsMatZnP[[1]][i]}}  # this should work iteratively with multiple clusters 
+    }
+    # make a plot
+    cntMat_df = as.data.frame(clsSigMask)
+    #inc = (28-length(cntMat_df))/2
+    colnames(cntMat_df) <- round(seq(soa[1],soa[2],by=1000/30)[(edg+1):(28-edg)],3)
+    rownames(cntMat_df) <- c(14:0)[0:12]
+    alltf = t(cntMat_df)
+    dfA = reshape2::melt(alltf)
+    avgPlot <- ggplot(dfA, aes(Var1, Var2, color=value)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(n.breaks = yscl) + scale_x_continuous(n.breaks=xscl) +
+      scale_fill_gradient(low="green", high="red", na.value = "grey88", space ="Lab")
+    # create outpute data
+    outDat = list(ClusVals=ClusVals,ClusMap=ClusMap,critClus=critClus,
+                  clus_Rastplot=avgPlot,clus_plts=plts)
+  } else {
+    outDat = list(ClusVals=ClusVals,ClusMap=ClusMap,critClus=critClus,clus_plts=plts)
+  }
+  # return the results
+  return(outDat)
+}
+# test 
+#clusMPC(testPerm$rawDat,zp_test, queen = F)
+#tstclus = clusMPC(perDists = tfa_mem_hr_pd, obsMatZnP = zp_test, queen = F)
+#tstclus$clus_plts
+
+# function to compute r-equivalent and power
+getRE <- function(pValsCells, n = 79){ # ,n = 40,SIG = .01){
+  # for testing
+  #pValsCells = zNdP[[2]]; n = 79; SIG = .01
+  # actual code
+  pd_dims = dim(pValsCells)
+  reMat = matrix(nrow = pd_dims[1], ncol = pd_dims[2])
+  #pwrMat = matrix(nrow = pd_dims[1], ncol = pd_dims[2])
+  #nSamoMat = matrix(nrow = pd_dims[1], ncol = pd_dims[2])
+  for (fq in 1:pd_dims[1]){
+    #fq = 1
+    for (ti in 1:pd_dims[2]){
+      #ti = 1
+      p = pValsCells[fq,ti]
+      t = qt(1-p, n - 1)              # get t
+      re = sqrt(t^2/(t^2+(n-2)))  # compute r=equivalent
+      # compute cohen's d and impute
+      reMat[fq,ti] = re
+    }
+  }
+  return(reMat)
+}
+
+# test function 
+#clusMPC(memRTrfcut_TFA_pDist,memRTrfcut_stats$zNdP)
+
+# Create a function to combine all these other functions
+#TFAPerm = TFA_perm(RetDat_v4_res, nPerm = 500, REF = REF, EDG = 8, FQ_lb = 3, FQ_ub = 7, 
+                     #erTask = erTask, dv = dv, resid = resid, spc = "linear")
+# function to run TFA
+fullStatTFA <- function(permDist, inDat, REF = T, erTask = "M", dv = "hr", resid = T, EDG = 8, lat = 0, xscl = 4, yscl = 8, clus_p=.05){
+  # for testing , 
+  #permDist = tfa_mem_hr_pd; inDat = RetDat_v4_res; REF = T; erTask = "M"; dv = "ies"; resid = T; EDG = 8; xscl = 4; yscl = 8; lat = 0
+  #rm(permDist); rm(inDat); rm(SOAdat); rm(obsTFA); rm(zp_test); rm(TFA_mpc); rm(cvDiff); rm(EffPow)
+  # actual code
+  SOAdat = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T, lat=lat)[[1]]
+  obsTFA = avgTFA(SOAdat, REF = REF, EDG = EDG, FQ_lb = 3, FQ_ub = 7, dv = dv, spc = "linear", subPlt = F, xscl = xscl, yscl = yscl)
+  zp_test = getZndP(permDist,obsTFA[[2]], lowTail = F) 
+  TFA_mpc = clusMPC(perDists=permDist,obsMatZnP=zp_test, queen = F, clus_plt_p = clus_p, 
+                    soa = c(min(unique(SOAdat$SOAcorr_ct)),max(unique(SOAdat$SOAcorr_ct))), edg = EDG, xscl = xscl, yscl = yscl)
+  cvDiff = cmpPlt_cvDiff(getCV(permDist),obsTFA[[2]])
+  EffPow = getRE(zp_test[[2]], n = length(unique(SOAdat$subject)))
+  # combine results
+  results = list(obsTFA=obsTFA,zp_test=zp_test,TFA_mpc=TFA_mpc,cvDiff=cvDiff,EffPow=EffPow) 
+  return(results)
+}
+
+```
+
+Plot function
+
+```{r}
+
+# function to make 
+    # make a plot
+mk_ncTFA_plt <- function(cntMat_df, sig = T, soa=c(400,1300),lowCol = "blue4",medCol = "maroon2",highCol = "maroon4",naCol = "grey88",
+                         titName = "Memory HR",yAxLab = "Frequency (Hz)",xAxLab = "SOA (ms)", ar = 1,
+                         lgps = "top",fci="plain",titSiz = 25,axLabSiz = 20,axTicSize = 1.5,axLinSize = 1.5,asTxtSize = 18, 
+                         lgndSz = 2,lgs = 10,lgTitsz = 8, NBX = seq(450,850,50), NBY = seq(3,15,2)){
+  # for testing
+  # soa=c(400,1300)
+  # cntMat_df = RasRt_TFAStats$clMpc[[3]] 
+  # sig = T
+  # lowCol = "blue4"
+  # medCol = "maroon2"
+  # highCol = "maroon4"
+  # titName = "Memory HR"
+  # yAxLab = "Frequency (Hz)"
+  # xAxLab = "SOA (ms)"
+  # constants
+  #ar = 20 
+  # actual code
+  inc = (28-length(cntMat_df[1,]))/2
+  colnames(cntMat_df) <- seq(soa[1],soa[2],by=1000/30)[(inc+1):(28-inc)]
+  rownames(cntMat_df) <- c(15:0)[0:13]
+  alltf = t(cntMat_df)
+  dfA = reshape2::melt(alltf)
+  colnames(dfA)[3] <- "Z"
+  if (sig == T){
+    avgPlot <- ggplot(dfA, aes(Var1, Var2, color=Z)) +
+    geom_raster(aes(fill=Z)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+    scale_y_continuous(breaks = NBY) + scale_x_continuous(breaks= NBX) +
+    scale_fill_gradient(low=medCol, high=highCol, na.value = naCol, space ="Lab") + 
+    theme(axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fci, hjust = .5),
+      legend.text=element_text(size=lgs),legend.key.size = unit(lgndSz, 'cm'),
+      legend.title = element_text(size=lgTitsz)) +  # , color = lnColor
+    labs(y= yAxLab, x = xAxLab) + ggtitle(titName) + theme(legend.position=lgps) +
+    coord_fixed(ratio = ar) 
+  } else if (sig == F){
+    avgPlot <- ggplot(dfA, aes(Var1, Var2, color=Z)) +
+    geom_raster(aes(fill=Z)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+    scale_y_continuous(breaks = NBY) + scale_x_continuous(breaks = NBX) +
+    scale_fill_gradient2(midpoint=0, low=lowCol, mid=medCol,high=highCol, space ="Lab" )
+    theme(axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fci, hjust = .5),
+      legend.text=element_text(size=lgs),legend.key.size = unit(lgndSz, 'cm'),
+      legend.title = element_text(size=lgTitsz)) +  # , color = lnColor
+    labs(y= yAxLab, x = xAxLab) + ggtitle(titName) + theme(legend.position=lgps) +
+    coord_fixed(ratio = ar) 
+  }
+  return(avgPlot)
+}
+```
+
+# Inter subject phase clustering (ISPC) functions
+
+ISPC functions
+
+```{r}
+#RetDat_v4_res, Nperm = 3000, erTask = "M", dv = "hr", resid = T, refl = T, edge = 0
+# organize behavioral data for function testing
+#testAvgSOA = avgSubSoas(AllSubRet_thr_v4, tSUB = 0, Task = 2, DV = 1, LG = F)
+#testAvgSOA
+
+# load modified ITPC function
+compute_itc_mod <- function(data) {
+
+  if (!is.eeg_tfr(data)) {
+    stop("This function requires an `eeg_tfr` object as input.")
+  }
+
+  if (!is.complex(data$signals[[1]])) {
+    stop("Data is not complex, returning original data.")
+  }
+
+  orig_dimnames <- dimnames(data$signals)
+  orig_dim <- dim(data$signals)
+  n_epochs <- orig_dim[5]   ###### This index seems to be wrong (I changed it from 1 to 5)
+
+  if (n_epochs == 1) {
+    stop("Only one epoch, so ITC cannot be calculated.")
+  }
+
+  data$signals <- data$signals / abs(data$signals)
+  data$signals <- abs(apply(data$signals,
+                            c(2, 3, 4),
+                            sum))
+  data$signals <- data$signals / n_epochs
+  dim(data$signals) <- c(1,
+                         orig_dim[2:4])
+  dimnames(data$signals) <- c(epoch = list("1"),
+                              orig_dimnames[2:4])
+  data$timings <- data$timings[data$timings$epoch == 1, ]
+  epochs(data) <- epochs(data)[epochs(data)$epoch == 1,
+                               c("epoch", "participant_id")]
+  data$freq_info$output <- "itc"
+  class(data) <- c("tfr_average",
+                   "eeg_tfr")
+  data
+}
+
+#AvgSOA_mem = soa_avg(RetDat_v4_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)[[1]]
+#testSub = filter(AvgSOA_mem, subject == unique(AvgSOA_mem$subject)[1])
+# New Function to use CONTINUOUS shift in cycle widths across frequency bands 
+TFA_complex <- function(inSig, subnum = 1, refl = F, fq_lb = 3, fq_ub = 7, dv = "hr", spc = "linear", output = "fourier"){  
+  # for testing
+  #inSig = testSub; subnum = 1; refl = T; HW = F; ZP = F; edge = 0; subNum = 2; fq_lb = 3; fq_ub = 7; spc = "linear"; dv = "hr"; output = "fourier"
+  # actual code
+  ts_dat = as.vector(as.matrix(inSig[,dv]))                 # convert data to vector
+  soa = c(min(inSig$SOAcorr_ct),max(inSig$SOAcorr_ct))      # convert to seconds
+  subid = unique(inSig$subject)                             # get subject ID
+  # set parameters
+  cyc_vals = c(fq_lb,fq_ub); fqBd = c(3,14); nfb = length(fqBd[1]:fqBd[2])        # get cycle values and frequency range
+  t = round(seq(soa[1],soa[2],by=1000/30),3); detr = detrend(ts_dat, wav=t, p = 2)   # get time data and detrend
+  nRfTs = c(rev(detr)[1:27],detr,rev(detr)[2:28])                                 # code to reflect the TS
+  t2 = round(c(seq(soa[1]-(soa[2]-soa[1]),soa[2]+(soa[2]-soa[1]),by=1000/30)),3)              # get reflected time domain info
+  # specify parameters if reflection is true
+  if (refl == T){inSigFin = nRfTs; tv = t2} else {inSigFin = detr; tv = t}
+  # do Morlet decomp - using EEGUtils <https://craddm.github.io/eegUtils/articles/time-frequency-analysis.html>
+  eegdat = suppressMessages(eeg_epochs(data=tibble(inSigFin),                                    # set parameters
+                     srate=30,
+                     events=tibble(event_onset=1,event_time=0,event_type=1,epoch=1,time=0),
+                     chan_info=NULL,
+                     timings=tibble(epoch=1,sample=seq(1,length(inSigFin)),time=tv),
+                     epochs=tibble(epoch=subnum,recording=NA,epoch_lable="allSubDat",participant_id=1),
+                     reference=NA))
+  tfr = compute_tfr(data=eegdat,method = "morlet", foi=fqBd, spacing = spc,                      # run time-frequency analysis
+                    n_freq = nfb, n_cycles = cyc_vals, output = output)
+  # print results
+  return(tfr)
+}
+
+# combine subjects complex values
+GrpCompMorlet <- function(inDat, refl = T, dv = "hr"){
+  # for testing
+  #dv = "hr"; inDat = soa_avg(RetDat_v4_res, erTask = "M", dv = dv, resid = T, rand = F, NArm = T, drp = T)[[1]]; refl = T; 
+  # get complex values for all subjects
+  subs = unique(inDat$subject)
+  for (i in 1:length(subs)){  #length(testAvgSOA)
+    #i = 1   # for testing
+    inSig = filter(inDat, subject == subs[i])
+    tfr_complex = TFA_complex(inSig, subnum = i, refl = refl, dv = dv)
+    #tfr_complex[[2]]
+    assign(paste("sub_",i,sep=""),tfr_complex)
+    print(i)
+  }
+  # bind in an EEG object
+  if (dv == "hr"){
+    all_tfr_dat = eeg_combine(sub_1,sub_2,sub_3,sub_4,sub_5,sub_6,sub_7,sub_8,sub_9,sub_10,
+                              sub_11,sub_12,sub_13,sub_14,sub_15,sub_16,sub_17,sub_18,sub_19,sub_20,
+                              sub_21,sub_22,sub_23,sub_24,sub_25,sub_26,sub_27,sub_28,sub_29,sub_30,
+                              sub_31,sub_32,sub_33,sub_34,sub_35,sub_36,sub_37,sub_38,sub_39,sub_40,
+                              sub_41,sub_42,sub_43,sub_44,sub_45,sub_46,sub_47,sub_48,sub_49,sub_50,
+                              sub_51,sub_52,sub_53,sub_54,sub_55,sub_56,sub_57,sub_58,sub_59,sub_60,
+                              sub_61,sub_62,sub_63,sub_64,sub_65,sub_66,sub_67,sub_68,sub_69,sub_70,
+                              sub_71,sub_72,sub_73,sub_74,sub_75,sub_76,sub_77,sub_78,sub_79,sub_80,
+                              sub_81,sub_82,sub_83,sub_84,sub_85,sub_86,sub_87,sub_88,sub_89,sub_90,
+                              sub_91,sub_92,sub_93,sub_94,sub_95,sub_96,sub_97,sub_98,sub_99,sub_100,
+                              sub_101,sub_102,sub_103,sub_104,sub_105,sub_106,sub_107,sub_108,sub_109,sub_110,
+                              sub_111,sub_112,sub_113,sub_114,sub_115,sub_116,sub_117,sub_118,sub_119,sub_120,
+                              sub_121,sub_122,sub_123,sub_124,sub_125, check_timings = FALSE)
+  } else {
+    all_tfr_dat = eeg_combine(sub_1,sub_2,sub_3,sub_4,sub_5,sub_6,sub_7,sub_8,sub_9,sub_10,
+                              sub_11,sub_12,sub_13,sub_14,sub_15,sub_16,sub_17,sub_18,sub_19,sub_20,
+                              sub_21,sub_22,sub_23,sub_24,sub_25,sub_26,sub_27,sub_28,sub_29,sub_30,
+                              sub_31,sub_32,sub_33,sub_34,sub_35,sub_36,sub_37,sub_38,sub_39,sub_40,
+                              sub_41,sub_42,sub_43,sub_44,sub_45,sub_46,sub_47,sub_48,sub_49,sub_50,
+                              sub_51,sub_52,sub_53,sub_54,sub_55,sub_56,sub_57,sub_58,sub_59,sub_60,
+                              sub_61,sub_62,sub_63,sub_64,sub_65,sub_66,sub_67,sub_68,sub_69,sub_70,
+                              sub_71,sub_72,sub_73,sub_74,sub_75,sub_76,sub_77,sub_78,sub_79,sub_80,
+                              sub_81,sub_82,sub_83,sub_84,sub_85,sub_86,sub_87,sub_88,sub_89,sub_90,
+                              sub_91,sub_92,sub_93,sub_94,sub_95,sub_96,sub_97,sub_98,sub_99,sub_100,
+                              sub_101,sub_102,sub_103,sub_104,sub_105,sub_106,sub_107,sub_108,sub_109,sub_110,
+                              sub_111,sub_112,sub_113,sub_114,sub_115,sub_116,sub_117,sub_118,sub_119,sub_120,
+                              sub_121,sub_122,sub_123, check_timings = FALSE)
+  } 
+  return(all_tfr_dat)
+}
+# testing
+#testComplex = GrpCompMorlet(AvgSOA_mem, refl = T, dv = "hr")
+# Create a function to run ISPC analysis and plot
+ISCP_analysis <- function(inDatComp, inDatSOA, refl = T, edge = 0, xscl = 4, yscl = 8){
+  # actual code
+  #inDatComp = CompVals; inDatSOA = AvgSOA_ispc; refl = T; edge = 0; yscl = 8; xscl = 4
+  #rm(CompVals); rm(AvgSOA_ispc); rm(tfr_plot1)
+  # specify information for non-reflected time series
+  soas = unique(inDatSOA$SOAcorr_ct)
+  fqBd = c(3,14); nfb = length(fqBd[1]:fqBd[2]); t = round(seq(min(soas),max(soas),by=1000/30),3)
+  rfsoa1 = min(soas)-(max(soas)-min(soas)); rfsoa2 = max(soas)+(max(soas)-min(soas)); t2 = round(seq(rfsoa1,rfsoa2,by=1000/30),3) 
+  if (refl == T){tv = t2} else {tv = t}
+  # get ITSC values
+  ITSC_outD = compute_itc_mod(inDatComp)
+  # extract and organize the raw values
+  rawVals = ITSC_outD$signals
+  for (i in 1:dim(ITSC_outD$signals)[2]){
+    #i = 5
+    rVec = rawVals[1,i,1,1:nfb]
+    if (i == 1){allr = rVec} else {allr = rbind(allr,rVec)}
+  }
+  rownames(allr) <- tv[1:length(t2)]                                 # rename rows based on SOA bin number
+  if (refl == T){t_slice = allr[which(rownames(allr) == t[1]):which(rownames(allr) == t[length(t)]),] } else {t_slice = allr} # select non reflected data 
+  allDat = apply(t(t_slice),2,rev)                       # rotate matrix 90 degrees for better alignment
+  allDat = allDat[,(edge+1):(length(allDat[1,])-edge)]   # cutoff edges
+  # make plot
+  titSinf = paste("cycs","3-7",", refection = ",refl,sep="")  # title specifying details
+  df = reshape2::melt(allDat)
+  tfr_plot1 = ggplot(df, aes(Var2, Var1)) +
+      geom_raster(aes(fill=value)) + theme_classic() + labs(x = "SOA", y = "Frequency (Hz)") +
+      scale_y_continuous(n.breaks = yscl) + scale_x_continuous(n.breaks = xscl) + ggtitle(titSinf)
+  # export data
+  outDat = list(eegUtils_o=ITSC_outD,raw=allDat,plt=tfr_plot1)
+  return(outDat)
+}
+# load circshift function
+circshift <- function(a, sz) {
+    if (is.null(a)) return(a)
+    
+    if (is.vector(a) && length(sz) == 1) {
+        n <- length(a)
+        s <- sz %% n
+        a <- a[(1:n-s-1) %% n + 1]
+
+    } else if (is.matrix(a) && length(sz) == 2) {
+        n <- nrow(a); m <- ncol(a)
+        s1 <- sz[1] %% n
+        s2 <- sz[2] %% m
+        a <- a[(1:n-s1-1) %% n + 1, (1:m-s2-1) %% m + 1]
+    } else
+        stop("Length of 'sz' must be equal to the no. of dimensions of 'a'.")
+
+    return(a)
+}
+# function for permuation testing
+ISPC_permTest <- function(inDat = RetDat_v4_res, Nperm = 2, erTask = "M", dv = "hr", refl = T, edge = 0, resid = T){
+  # for testing
+  #inDat = RetDat_v4_res; Nperm = 2; erTask = "M"; dv = "hr"; refl = T; edge = 0; resid = T
+  #rm(AvgSOA_ispc); rm(inDat); 
+  # Get the complex values
+  AvgSOA_ispc = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T, lat = 0)[[1]]
+  CompVals = GrpCompMorlet(AvgSOA_ispc, refl = refl, dv = dv)
+  # shuffle (rotate) the complex values for each frequency row, for each subject
+  freqs = 1:dim(CompVals$signals)[4] # index 1 = 14 hz
+  Nperms = 1:Nperm
+  set.seed(18)
+  for (permi in Nperms){
+    #permi = 1 # for testing
+    subs = 1:length(unique(AvgSOA_ispc$subject))
+    for (subi in subs){
+      for (freqi in freqs){
+        #freqi = 1; subi = 1 # for testing
+        freqDat = as.vector(CompVals$signals[1,1:dim(CompVals$signals)[2],1,freqi,subi])  # get complex values for a given frequency bin (across all SOAs)
+        freqDatNNA = freqDat[which(is.na(freqDat) == F)]                                  # select the data without NAs
+        numNA = length(which(is.na(freqDat) == T))/2                                      # get length of half data that are NAs
+        rNum = sample(1:length(freqDatNNA))[1]                                            # get a random number from 1 to length of real data
+        freqDat_circSH = circshift(freqDatNNA,rNum)                                       # circularly shiffle (or rotate) that number 
+        freqDat_circSH = c(rep(NA,numNA),freqDat_circSH,rep(NA,numNA))                    # bind NA's back on either end
+        # pipe new values into old data 
+        CompVals$signals[1,1:dim(CompVals$signals)[2],1,freqi,subi] <- freqDat_circSH
+      }
+    }
+    # re-compute ISPC
+    rand_ISCP = suppressWarnings(ISCP_analysis(CompVals, AvgSOA_ispc, refl = refl, edge = edge))
+    # bind iteravely in z dim
+    if (permi == 1){allPerms = rand_ISCP$raw} else {allPerms = abind(allPerms,rand_ISCP$raw,along=3)}
+    print(permi)
+  }
+  # return data
+  return(allPerms)
+}
+# test
+#testPerm = ISPC_permTest(inDat = RetDat_v4_res, Nperm = 500, erTask = "M", dv = "hr", refl = T, edge = 0)
+
+# function to run TFA
+fullStatISPC <- function(permDist, inDat, refl = T, erTask = "M", dv = "hr", resid = T, edge = 8, xscl = 4, yscl = 8, clus_p=.05){
+  # for testing , 
+  #permDist = testPerm; inDat = RetDat_v4_res; refl = T; erTask = "M"; dv = "ies"; resid = T; edge = 0
+  #rm(SOAdat); rm(obsTFA); rm(zp_test); rm(TFA_mpc); rm(cvDiff); rm(EffPow)
+  # actual code
+  AvgSOA_ispc = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T)[[1]]    # Get SOA values
+  CompVals = GrpCompMorlet(AvgSOA_ispc, refl = refl, dv = dv)                                                # get complex morlet wavelet values
+  ISCP = suppressWarnings(ISCP_analysis(CompVals, AvgSOA_ispc, refl = refl, edge = edge, xscl = xscl, yscl = yscl))                    # get ISPC values
+  zp_test = getZndP(permDist,ISCP$raw, lowTail = F)                                                          # get z and p values for each cell
+  TFA_mpc = clusMPC(permDist,zp_test, queen = F, clus_plt_p = clus_p,                                            # cluster correction 
+                    soa = c(min(unique(AvgSOA_ispc$SOAcorr_ct)),max(unique(AvgSOA_ispc$SOAcorr_ct))), edg = edge, xscl = xscl, yscl = yscl)
+  cvDiff = cmpPlt_cvDiff(getCV(permDist),ISCP$raw)                                                           # Difference from critical values
+  EffPow = getRE(zp_test[[2]], n = length(unique(AvgSOA_ispc$subject)))                                      # get r equivalent
+  # combine results
+  results = list(ISCP_raw=ISCP$raw,zp_test=zp_test,TFA_mpc=TFA_mpc,cvDiff=cvDiff,EffPow=EffPow) 
+  return(results)
+}
+
+```
+
+# Phase analyses
+
+Phase functions
+
+```{r}
+phaseDiff_anaPlt_2 <- function(inputVec, color1="turquoise3", color2="turquoise3",colorV="turquoise3",condName = "SwSt",binSz = 10, rnd = 4,
+                              ln_size = 2, titSiz = 30, axLabSiz = 20, axTicSize = 1.5, axLinSize = 1.5, asTxtSize = 16,
+                             title1="",title2="", fc = "plain",anX = 1, anY = 1, anLab = "", anSz=5, anAn=1){
+  # for testting
+  # inputVec = memIes_phase[[1]]$phase
+  # color1="maroon3"; color2="turquoise3"; condName = "phaseDiff";binSz = 10; rnd = 4;
+  # ln_size = 2; titSiz = 30; axLabSiz = 20; axTicSize = 1.5; axLinSize = 0; asTxtSize = 16;title1="";title2="";colorV="turquoise3"
+  # fc = "plain";anX = 1; anY = 1; anLab = ""; anSz=5; anAn=1
+  # Get circular phase sumary data and stats
+  pltDat = data.frame(rads=inputVec)
+  RtSts = r.test(inputVec); stsR = RtSts$r.bar; stsP = RtSts$p.value; circM = circ.mean(inputVec); circV = circ.disp(inputVec)$var; MRvecL = rho.circular(inputVec, na.rm = FALSE)
+  outDat_df = data.frame(circ_mn=circM,circ_var=circV,meanRVecL=MRvecL,r_bar=stsR,p_bar=stsP)
+  # make plot df
+  pol_df = data.frame(lab=c(rep("vals",length(inputVec)),"suma"),amp=c(rep(0,length(inputVec)),MRvecL),
+                      phase=c(inputVec,circM))
+  #axisText = c(expression(  paste("±",pi,sep="") , paste("-",pi,"/2",sep="") , "0" , paste(pi,"/2",sep="") ))
+  axisText = c( "180" , "-90" , "0" , "90") # paste("±","180",sep="")
+  # first plot that works (phase and amplitude info)
+  plot_2 = ggplot(pltDat, aes(x = rads)) +
+    geom_histogram(binwidth = pi/binSz, fill = color1, color = color2) +  #, boundary = -7.5
+    coord_polar(start = pi/2, direction = -1) +
+    scale_x_continuous(limits = c(-pi,pi),
+                       breaks = seq(-pi,pi, by = pi/2)[ 1:(length(seq(-pi,pi, by = pi/2))-1) ],
+                       minor_breaks = seq(-pi,pi, by = pi/8)[ 1:(length(seq(-pi,pi, by = pi/8))-1) ],
+                       expand = c(0, 0),
+                       labels =  axisText) + 
+    theme_minimal() + ggtitle(title2) +
+    theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = 0),
+      axis.text.x = element_text(size=asTxtSize, vjust = 1), axis.text.y = element_blank(),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face=fc, margin = margin(b = 2)) ) +
+    labs(y= "", x = "") 
+  
+  # MRV plot
+  plot_v = ggplot(pol_df, aes(x=phase, y=amp, color=lab)) + coord_polar(start=pi/2, direction = -1) + 
+    geom_segment(aes(y=0, xend=phase, yend=amp), size=ln_size,color=colorV) + # arrow=arrow(length=unit(0.3,"cm")),
+    scale_color_manual(values = c(color1,"white")) +
+    geom_point(aes(y=1,x=pol_df$phase), color = color2, size = ln_size, alpha=0) +
+    scale_x_continuous(limits = c(-pi,pi),
+                       breaks = seq(-pi,pi, by = pi/2)[ 1:(length(seq(-pi,pi, by = pi/2))-1) ],
+                       minor_breaks = seq(-pi,pi, by = pi/8)[ 1:(length(seq(-pi,pi, by = pi/8))-1) ],
+                       expand = c(0, 0),
+                       labels = axisText) + 
+    #scale_y_continuous(limits = c(0, 90), expand = c(0, 0), breaks = 90) +
+    theme_minimal() + ggtitle("") +
+    theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = 0),
+      axis.text.x = element_text(size=asTxtSize, vjust = 1), axis.text.y = element_blank(),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face=fc, margin = margin(b = 2)), legend.position="none", 
+      panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    labs(y= "", x = "") + annotate(geom="text", x = anX, y = anY, label=anLab,color="black", size=anSz, angle=anAn)
+  plot_3 = ggdraw() + draw_plot(plot_2) + draw_plot(plot_v) 
+  plot_3
+  #rm(plot_1); rm(plot_2); rm(plot_3)
+  plots = list(data=outDat_df,plt=plot_3)
+  return(plots)
+}
+
+# phase consistency analysis 
+grpPhaseCon <- function(inDat = RetDat_v4_res, erTask = "M", dv = "rt", fq = 7, color = "maroon3", resid = T,
+                        title = "HR vs RT Phase Diff", nbins = 10, titSiz = 25){
+  # for testing
+  #inDat = RetDat_v4_res; erTask = "M"; dv = "rt"; fq = 7; color = "maroon3"; resid = T; title = "HR vs RT Phase Diff"; nbins = 10; titSiz = 25
+  # actual code
+  AvgSOA = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T, lat = 0)[[1]]
+  subs = unique(AvgSOA$subject); c = 0
+  for (subi in subs){
+    #subi = subs[1] # for  testing
+    c = c + 1
+    subDat = as.vector(unlist(filter(AvgSOA, subject == subi)[,dv]))
+    phases = getSpec_pmp(subDat, dtr = T, hw = T, output = "phase", nSamp = 30, sf = 30, fq_wind = c(3,14))
+    phase = phases[[1]][which(phases[[2]] == fq)]
+    phaseDat_i = data.frame(subject=subi, phase = phase, hz = fq)
+    if (c == 1){phaseDat = phaseDat_i} else {phaseDat = rbind(phaseDat,phaseDat_i)}
+  }
+  phaseAna = phaseDiff_anaPlt_2(phaseDat$phase, color1=color, color2="grey",colorV="black",condName = "SwSt", binSz = nbins, rnd = 4,
+                                ln_size = 2, titSiz = titSiz, axLabSiz = 20, axTicSize = 1.5, axLinSize = 0, asTxtSize = 16,
+                               title1="",title2=title, anX = 1, anY = 1, anLab = "", anSz=1, anAn=1)
+  min(phaseDat$phase); max(phaseDat$phase)
+  return(list(phaseDat=phaseDat,sumDat=phaseAna$data,plt=phaseAna$plt))
+}
+# phase difference function
+RadDiff <- function(targetA,sourceA, type = "180"){
+  b = targetA - sourceA           # get the raw differnce
+  if (type == "180"){
+    a = (b + pi) %% (2*pi) - pi   # scale it between +- pi (180)
+    # note: add pi to scale to 360, get modulo 2 pi, then - pi to scale back to +-pi
+  } else if (type == "360"){
+    a = b %% (2*pi)                # scale it between 2 pi (360) - requires input to be +-pi
+  }
+  return(a)
+}
+# phase difference analysis
+grpPhaseDiff <- function(inDat_a = RetDat_v4_res, erTask_a = "M", dv_a = "hr", color_a = "maroon3",
+                         inDat_b = RetDat_v4_res, erTask_b = "M", dv_b = "rt", color_b = "maroon4",
+                         fq = 7, resid = T, title = "HR vs RT Phase Diff", fc = "bold",
+                         nbins = 10, titSiz = 25, axLabSiz = 20, asTxtSize = 10, typeD = "180", ln_size = 2){
+  # for testing
+  #fq = 7; resid = T; title = "HR vs RT Phase Diff"; nbins = 10; titSiz = 25; typeD = "180"
+  #inDat_a = RetDat_v4_res; erTask_a = "M"; dv_a = "hr"; color_a = "maroon3"
+  #inDat_b = RetDat_v4_res; erTask_b = "M"; dv_b = "rt"; color_b = "maroon4"
+  # actual code
+  AvgSOA_a = soa_avg(inDat_a, erTask = erTask_a, dv = dv_a, resid = resid, rand = F, NArm = F, drp = T)[[1]]
+  AvgSOA_b = soa_avg(inDat_b, erTask = erTask_b, dv = dv_b, resid = resid, rand = F, NArm = F, drp = T)[[1]]
+  commonSubs = intersect(unique(AvgSOA_a$subject),unique(AvgSOA_b$subject))
+  AvgSOA_a = filter(AvgSOA_a, subject %in% commonSubs)
+  AvgSOA_b = filter(AvgSOA_b, subject %in% commonSubs)
+  # check subject order match
+  if (  any( ( unique(AvgSOA_a$subject) == unique(AvgSOA_b$subject) ) == F ) ){
+    warning("Subjects do not match across comparison groups")
+  }
+  #AvgSOA_a; AvgSOA_b
+  subs = unique(AvgSOA_a$subject); c = 0
+  for (subi in subs){
+    #subi = subs[1] # for  testing
+    c = c + 1
+    #print(c)
+    # phase a
+    subDat_a = as.vector(unlist(filter(AvgSOA_a, subject == subi)[,dv_a]))
+    phases_a = getSpec_pmp(subDat_a, dtr = T, hw = T, output = "phase", nSamp = 30, sf = 30, fq_wind = c(3,14))
+    phase_a = phases_a[[1]][which(phases_a[[2]] == fq)]
+    # phase b
+    subDat_b = as.vector(unlist(filter(AvgSOA_b, subject == subi)[,dv_b]))
+    phases_b = getSpec_pmp(subDat_b, dtr = T, hw = T, output = "phase", nSamp = 30, sf = 30, fq_wind = c(3,14))
+    phase_b = phases_b[[1]][which(phases_b[[2]] == fq)]
+    # get phase diff
+    phaseDiff = RadDiff(phase_a,phase_b, type = typeD)
+    # bind data
+    phaseDat_i = data.frame(subject=subi, phaseDiff = phaseDiff, hz = fq)
+    if (c == 1){phaseDat = phaseDat_i} else {phaseDat = rbind(phaseDat,phaseDat_i)}
+  }
+  phaseAna = phaseDiff_anaPlt_2(phaseDat$phaseDiff, color1=color_a, color2=color_b,colorV="black",condName = "SwSt", binSz = nbins, rnd = 4,
+                                ln_size = ln_size, titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = asTxtSize, axLinSize = 0, asTxtSize = asTxtSize,
+                               title1="",title2=title,fc=fc, anX = 1, anY = 1, anLab = "", anSz=1, anAn=1)
+  min(phaseDat$phase); max(phaseDat$phase)
+  return(list(phaseDat=phaseDat,sumDat=phaseAna$data,plt=phaseAna$plt))
+}
+
+```
+
+# Nicotine IDF Analysis
+
+```{r}
+# Function to get individualized peak frequency and power
+FFT_IDF <- function(inDat = RetDat_v4_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10)){
+  # for testing
+  #inDat = RetDat_v4_res; erTask = "M"; dv = "rt"; resid = F; zStat = T; fq_rng = c(3:10)
+  # get average by SOA
+  soaDat = soa_avg(inDat, erTask = erTask, dv = dv, resid = resid, NArm = T, drp = T, rand = F)[[1]]
+  # get FFT
+  fftDat = FFT_grouped(soaDat, dv = dv)
+  hz = fftDat[[3]]
+  grpFFT = as.data.frame(fftDat[[1]])
+  colnames(grpFFT) <- hz
+  subFreqs = grpFFT[,as.character(fq_rng)]
+  for (i in 1:nrow(grpFFT)){
+    #i = 1
+    subi = rownames(subFreqs)[i]
+    sumDat = data.frame(subject=subi,hz=hz[which(subFreqs[i,]==max(subFreqs[i,]))],pwr=max(subFreqs[i,]))
+    if (i == 1){allDat = sumDat} else {allDat = rbind(allDat,sumDat)}
+  }
+  return(allDat)
+}
+# test function
+#FFT_IDF(RetDat_v4_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10))
+
+# function to get IDF IV factors
+getIDF_factors <- function(inDat = RetDat_v4_res){
+  # for testing
+  #inDat = RetDat_v3 # rm(subSumDat)
+  # actual code
+  c_cr = .5; c_bs = -.5
+  #unique(inDat$sex_response)
+  inDat$bin_sex_response = ifelse(inDat$sex_response == "Male",c_cr,
+                                  ifelse(inDat$sex_response == "Female",c_bs,NA))
+  inDat$bin_nicotine_response = ifelse(inDat$nicotine_response == "Yes",c_cr,
+                                            ifelse(inDat$nicotine_response == "No",c_bs,NA))
+  inDat$bin_cannabis_response = ifelse(inDat$canabis_response == 0,c_cr,
+                                      ifelse(inDat$canabis_response != 0,c_bs,NA))
+  inDat$bin_anxiety_response = ifelse(inDat$medicaloption1_response == "Anxiety Disorders (e.g. Specific Phobia, Panic Disorder, Generalized Anxiety)" &
+                                        !is.na(inDat$medicaloption1_response),c_cr,c_bs)
+  inDat$bin_OCD_response = ifelse(inDat$medicaloption2_response == "Obsessive-Compulsive Disorders (e.g. OCD, Body Dysmorphic, Hoarding disorder)" &
+                                        !is.na(inDat$medicaloption2_response),c_cr,c_bs)
+  inDat$bin_traumaStress_response = ifelse(inDat$medicaloption3_response == "Trauma and Stessor Related Disorders (e.g. PTSD, Acute Stress Disorder, Abjustment Disorder)" &
+                                        !is.na(inDat$medicaloption3_response),c_cr,c_bs)
+  inDat$bin_MDD_response = ifelse(inDat$medicaloption4_response == "Depressive Disorders (e.g. MDD, Substance Induced Depression, Premenstral Dysphoric Disorder)" &
+                                        !is.na(inDat$medicaloption4_response),c_cr,c_bs)
+  inDat$time_hrs <- as.numeric(inDat$time)/60/60 # convert seconds to hours
+  # get factors at the subject level
+  subSumDat = inDat %>% group_by(subject) %>% summarize(sex = mean(bin_sex_response), nicotine = mean(bin_nicotine_response), cannabis = mean(bin_cannabis_response),
+                                                        anxiety = mean(bin_anxiety_response), OCD = mean(bin_OCD_response), 
+                                                        PTSD = mean(bin_traumaStress_response), MDD = mean(bin_MDD_response),
+                                                        dayTime = mean(time_hrs))
+  subSumDat$dayTime_cent <- scale(subSumDat$dayTime)
+  subSumDat$dayTime_shift <- ifelse(subSumDat$dayTime < 5, subSumDat$dayTime+24,subSumDat$dayTime) # add 24 to times below 5 am (assuming folks stayed awake rather than going to sleep)
+  subSumDat$dayTime_shift_cent <- scale(subSumDat$dayTime_shift)
+  subSumDat$subject <- as.character(subSumDat$subject)
+  # return data
+  return(subSumDat)
+}
+
+# link the two functions together
+IDF_analysis <- function(inDat = RetDat_v4_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10), naO = T, noInt = F){
+  # for testing
+  #inDat = RetDat_v3; erTask = "M"; dv = "hr"; resid = F; fq_rng = c(3:10); naO = T
+  # actual code
+  FFT_idfDat = FFT_IDF(inDat, erTask = erTask, dv = dv, resid = resid, fq_rng = fq_rng)
+  IDF_factDat = getIDF_factors(inDat)
+  JoinedDat = left_join(FFT_idfDat,IDF_factDat, by = "subject")
+  if (naO == T){JoinedDat = na.omit(JoinedDat)} # remove NAs
+  if (noInt == F){
+    # run the glm for power
+    pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent + nicotine*dayTime_shift_cent, data = JoinedDat)
+    pwr_simpEff = emtrends(pwr_model, pairwise ~ nicotine, var = "dayTime_shift_cent", infer = T)
+    # run the glm for frequency
+    hz_model = lm(hz ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent + nicotine*dayTime_shift_cent, data = JoinedDat)
+    # print results
+    results = list(data=JoinedDat,pwr_model=pwr_model,pwr_simpEff=pwr_simpEff,hz_model=hz_model)
+  } else if (noInt == T){
+    # run the glm for power
+    pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = JoinedDat)
+    # run the glm for frequency
+    hz_model = lm(hz ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = JoinedDat)
+    # print results
+    results = list(data=JoinedDat,pwr_model=pwr_model,hz_model=hz_model)
+  }
+  return(results)
+}
+```
+
+# Zone metric analysis functions
+
+Functions for computing the zone metric
+
+```{r}
+getZoneMet_rec <- function(inEnc, inRet, acrSub = F){
+  # for testing
+  #rm(inEnc); rm(inRet)
+  #inEnc = EncDat_v4_res; inRet = RetDat_v4_res; acrSub = F
+  # actual code
+  inEnc$block <- recode(inEnc$blockcode, B_Enc_r1 = 1, B_Enc_r2 = 2, B_Enc_r3 = 3, B_Enc_r4 = 4,
+                        B_Enc_r5 = 5, B_Enc_r6 = 6, B_Enc_r7 = 7, B_Enc_r8 = 8) # recode the block labels
+  inEnc = data.table(inEnc)  # convert to data table
+  # -------- convert scales of data to help with model fit ----------
+  inEnc[, latency_1000 := latency/1000]                   # convert RT and SOA to seconds 
+  inEnc[, SOAC_1000 := idealSOA/1000]                   # convert SOA to seconds
+  inEnc[, trial_in_block1000 := trialnum/1000]            # divide trial number by 1000
+  inEnc[, SOA_sqr := SOAC_1000^2]                         # square SOA 
+  inEnc[, trial_in_block1000_sqr := trial_in_block1000^2] # square trial number 
+  # center the variables
+  inEnc[, SOAC := scale(SOAC_1000, scale =F), by = subject]                              # mean center SOA
+  inEnc[, SOA_sqrC := scale(SOA_sqr, scale =F), by = subject]                            # mean center SOA squared
+  inEnc[, trial_in_blockC := scale(trial_in_block1000, scale = F), by= subject]          # center trial
+  inEnc[, trial_in_block_sqr_C := scale(trial_in_block1000_sqr, scale = F), by= subject] # center trial squared
+  # effect code task and switch/stay variables
+  inEnc[, taskEC := ifelse(Task == "InOut", -.5, .5)]
+  inEnc[, SwStEC := ifelse(SwSt == "Stay", -.5, .5)]
+  # mean center RT within subject;
+  inEnc[, latency_1000C := scale(latency_1000, scale  = F), by = subject]
+  
+  # calculate median RT by stimulus and task 
+  mean_latency_by_stim_task = inEnc[, .(rt_stim_task = mean(latency_1000C, na.rm=T)), by = .(stimulus, taskEC)] # average RT by stimulus and task
+  mean_latency_by_stim_task%>%arrange(stimulus)
+  inEnc = left_join(inEnc, mean_latency_by_stim_task)                                                           # join Rt by stimulus and task to main DT 
+  
+  # get the residuals
+  inEnc[!is.na(latency), RT_residuals := residuals(lm(latency_1000 ~ trial_in_blockC + trial_in_block_sqr_C + 
+                                                        SOAC_1000 + SOA_sqr + SwStEC + rt_stim_task)), by = subject]
+  
+  # below shows that RT residuals and RTs are still highly correlated
+  cor.test(inEnc$RT_residuals, inEnc$latency_1000C)
+  
+  # create a 3 trial moving average of RTs and RT deviance based on a preceding moving average (min_obs = 1, means it will still compute a value for the second trial onward)
+  inEnc[, RT_deviance := abs(RT_residuals - mean(RT_residuals)), by = subject]
+  inEnc[, preceding_RT := as.vector(lag(roll::roll_mean(as.matrix(RT_residuals), width = 3, min_obs = 1))), by = .(subject, block)]
+  inEnc[, preceding_RT_deviance := as.vector(lag(roll::roll_mean(as.matrix(RT_deviance), width = 3, min_obs = 1))), by = .(subject, block)]
+  
+  # use preceding RT deviance (not speed) as primary measure of attention
+  if (acrSub == F){         # within subject median
+    median_deviance.subjects = inEnc[, .(subject_median_deviance = median(preceding_RT_deviance, na.rm=T)), by = subject]
+    inEnc = left_join(inEnc, median_deviance.subjects, by="subject")
+    inEnc[, zone_out_esterman := ifelse(preceding_RT_deviance > subject_median_deviance, 0.5, -0.5)]     
+    inEnc = as.data.frame(inEnc)
+  } else if (acrSub == T){  # across subject median
+    inEnc = as.data.frame(inEnc)
+    sub_rt_devs = inEnc %>% filter(is.na(inEnc$preceding_RT_deviance) == F) %>%
+      group_by(subject) %>% summarize(mean_rtDev = median(preceding_RT_deviance))
+    cutOff = mean(sub_rt_devs$mean_rtDev)
+    inEnc$zone_out_esterman = ifelse(inEnc$preceding_RT_deviance > cutOff, 0.5, -0.5)
+  }
+  
+  # bind important data to retrieval 
+  RTdevDat = inEnc %>% select(subject, block, stimulus, RT_residuals, RT_deviance, 
+                              preceding_RT, preceding_RT_deviance, preceding_RT_deviance, zone_out_esterman) 
+  inRet_out = left_join(inRet,RTdevDat,by = c("subject","stimulus"))
+  
+  # return df's
+  return(list(enc=inEnc,ret=inRet_out))  # convert back to data frame
+}
+# test function
+#zoneTest = getZoneMet_rec(EncDat_v4_res, RetDat_v4_res, acrSub = F)
+#zoneTest$ret
+
+# function to get time-courses for in and out of the zone
+zoneSOAavg <- function(inDat = zoneTest$ret, erTask = "M", dv = "hr", resid = T, surr = F, msg = F){
+  # for testing
+  #inDat = zoneDat_v4$ret; erTask = "M"; dv = "rt"; resid = T; surr = F; msg = F
+  #rm(inDat)
+  # SOA for in zone
+  if (surr == F){
+    inZone = inDat %>% filter(zone_out_esterman == -0.5)
+  } else if (surr == T){
+    inZone = inDat %>% filter(surrCond == 1)
+  }
+  inZoneSOA = soa_avg(inZone, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T)
+  inZoneSubs = unique(inZoneSOA$soaData$subject)
+  # SOA for out of zone
+  if (surr == F){
+    outZone = inDat %>% filter(zone_out_esterman == 0.5)
+  } else if (surr == T){
+    outZone = inDat %>% filter(surrCond == 2)
+  }
+  outZoneSOA = soa_avg(outZone, erTask = erTask, dv = dv, resid = resid, rand = F, NArm = T, drp = T)
+  outZoneSubs = unique(outZoneSOA$soaData$subject)
+  # if different subjects dropped - select the common subjects
+  if (length(inZoneSubs) > length(outZoneSubs)){
+    sameSubs = inZoneSubs[ which( !is.na( match(inZoneSubs,outZoneSubs) ) ) ]; chMatch = match(inZoneSubs,outZoneSubs)
+  } else {
+    sameSubs = outZoneSubs[ which( !is.na( match(outZoneSubs,inZoneSubs) ) ) ]; chMatch = match(outZoneSubs,inZoneSubs)
+  }
+  soaDat_IN =  filter(inZoneSOA$soaData, subject %in% sameSubs); soaDat_OUT = filter(outZoneSOA$soaData, subject %in% sameSubs)
+  if (msg == T){print(paste(length(sameSubs)," common subjects kept for later analysis",sep=""))}
+  # Check if the subjects match
+  if (any(is.na(chMatch))){warning("Memory and classification not same length")}
+  # indecies for droped subjects
+  drpSubs = unique(inDat$subject)[which(unique(inDat$subject) %notin% sameSubs)]
+  if (length(drpSubs) > 0){drpBool = T} else {drpBool = F}
+  # return
+  return(list(soaDat_IN=soaDat_IN,soaDat_OUT=soaDat_OUT,drpBool=drpBool,drpSubs=drpSubs))
+}
+# testing
+#test = zoneSOAavg(inDat = zoneTest$ret, erTask = "M", dv = "hr", resid = T, surr = F, msg = T)
+  
+# zone fft function
+zoneFFT <- function(inZoneSOA, outZoneSOA, dv = "hr"){
+  # for testing
+  #inZoneSOA = ZoneSOADat$soaDat_IN; outZoneSOA = ZoneSOADat$soaDat_OUT; dv = "rt"
+  # fft for in and out of zone
+  fftDat_IN_f = FFT_grouped(inZoneSOA, dv = dv)
+  fftDat_IN = fftDat_IN_f$AllSub_fft
+  fftDat_OUT_f = FFT_grouped(outZoneSOA, dv = dv)
+  fftDat_OUT = fftDat_OUT_f$AllSub_fft
+  # double check to make sure subjects match
+  if (any(is.na(match(rownames(fftDat_IN),rownames(fftDat_OUT)))) == T){
+    warning("Subject ID's don't match between in and out of the zone data frames")
+  }
+  # compute the difference matrix
+  fftDat_diff = fftDat_IN-fftDat_OUT
+  fftDat_diff_mn = apply(fftDat_diff, 2, mean)
+  # plot
+  hz = fftDat_IN_f$hz
+  pldf = data.frame(hz=hz,pwr=fftDat_diff_mn)
+  plt = ggplot(pldf, aes(x = hz, y = pwr)) + geom_line() + scale_x_continuous(n.breaks = 12)
+  # add colnames
+  colnames(fftDat_diff) = hz
+  # return data 
+  return(list(diffDat=fftDat_diff,mnDiff=fftDat_diff_mn,hz=hz,plt=plt))
+}
+# test both
+#test = zoneSOAavg(inDat = zoneTest$ret, erTask = "M", dv = "rt", resid = T, surr = F, msg = T)
+#zoneFFT(test$soaDat_IN, test$soaDat_OUT, dv = "rt")
+
+# perm testing function
+zonePerm <- function(inDat = zoneTest$ret, nPerm = 3000, erTask = "M", dv = "hr", resid = T, seed = 18){
+  # for testing
+  #inDat = zoneDat_v4$ret; nPerm = 10; erTask = "M"; dv = "hr"; resid = T; seed = 18
+  #inDat = EncDat_v3; nPerm = 10; erTask = "C"; dv = "hr"; resid = F; seed = 18
+  # actual code
+  rm(allPerms)
+  
+  # drop the dropped subject for shuffling in the surrogate
+  set.seed(seed)
+  inDat$ri = 1 # create a row index (to sum over later to deal with SOA's will diff number of trials)
+  # run perm test
+  start = Sys.time()
+  for (i in 1:nPerm){
+    #i = 1
+    # create and shuffle surrogate condition labels
+    inDat_2 = inDat %>% group_by(subject,idealSOA) %>% mutate(surrCond = sample(c(rep(1,sum(ri)/2),rep(2,sum(ri)/2))))
+    #inDat_2 %>% filter(subject == unique(inDat_2$subject)[1],idealSOA == sort(unique(inDat_2$idealSOA))[1]) %>% select(surrCond)
+    # compute the zone power difference
+    surrConds = zoneSOAavg(inDat_2, erTask = erTask, dv = dv, resid = resid, surr = T, msg = F) 
+    surrDiff = zoneFFT(surrConds$soaDat_IN, surrConds$soaDat_OUT, dv = dv)$mnDiff
+    #surrDiff$mnDiff
+    print(i)
+    if (i == 1){allPerms = surrDiff} else {allPerms = rbind(allPerms,surrDiff)}
+  }
+  print( Sys.time() - start )
+  # label the colnames
+  #colnames(allPerms) = obs_f$hz
+  # return output
+  #return(list(obs=obs_fft,surr=allPerms))
+  return(allPerms)
+}
+
+# Modified permutation function
+zonePerm_nd <- function(inDat = zoneTest$ret, nPerm = 3000, erTask = "M", dv = "hr", resid = T, seed = 18){
+  # for testing
+  #inDat = zoneDat_v4$ret; nPerm = 10; erTask = "M"; dv = "rt"; resid = T; seed = 18
+  # actual code
+  #rm(allPerms)
+  # get the observed values 
+  ZoneSOADat = zoneSOAavg(inDat = inDat, erTask = erTask, dv = dv, resid = resid, surr = F, msg = T)
+  zn_fft_orig = zoneFFT(ZoneSOADat$soaDat_IN, ZoneSOADat$soaDat_OUT, dv = dv)
+  obs_fft = zn_fft_orig$mnDiff; fullSubs = rownames(zn_fft_orig$diffDat)
+  print(paste(length(fullSubs)," total subjects used for this analysis"))
+  inDat = inDat %>% filter(subject %in% fullSubs)
+  #length(unique(inDat$subject))
+  # drop the dropped subject for shuffling in the surrogate
+  set.seed(seed)
+  inDat$ri = 1 # create a row index (to sum over later to deal with SOA's will diff number of trials)
+  # run perm test
+  start = Sys.time()
+  for (i in 1:nPerm){
+    #i = 2
+    # create and shuffle surrogate condition labels
+    inDat_2 = inDat %>% group_by(subject,idealSOA) %>% mutate(surrCond = sample(c(rep(1,sum(ri)/2),rep(2,sum(ri)/2))))
+    # compute the zone power difference
+    ZoneSOADat_surr = suppressWarnings(zoneSOAavg(inDat = inDat_2, erTask = erTask, dv = dv, resid = resid, surr = T, msg = F))
+    inZone = ZoneSOADat_surr$soaDat_IN; outZone = ZoneSOADat_surr$soaDat_OUT
+    # if there are dropped subjects, loop through until those subjects meet criteria
+    if (ZoneSOADat_surr$drpBool == F){
+      zn_fft_surr = zoneFFT(ZoneSOADat_surr$soaDat_IN, ZoneSOADat_surr$soaDat_OUT, dv = dv)
+      surrDiff = zn_fft_surr$mnDiff
+    } else {
+      subs = ZoneSOADat_surr$drpSubs
+      s = 0
+      for (subi in subs){
+        #subi = subs[1] # for testing
+        s = s + 1
+        # if there are still dropped subs - while loop iterate until there are not
+        drp = T
+        while (drp == T){
+          inDat_subset = inDat %>% filter(subject == subi) %>% group_by(idealSOA) %>% mutate(surrCond = sample(c(rep(1,sum(ri)/2),rep(2,sum(ri)/2))))
+          ZoneSOADat_surr_ss = suppressWarnings(zoneSOAavg(inDat = inDat_subset, erTask = erTask, dv = dv, resid = resid, surr = T, msg = F))
+          if (ZoneSOADat_surr_ss$drpBool){drp = T} else {drp = F; ss_inZone = ZoneSOADat_surr_ss$soaDat_IN; ss_outZone = ZoneSOADat_surr_ss$soaDat_OUT}
+        }
+        if (s == 1){
+          ss_inZone_a = ss_inZone; ss_outZone_a = ss_outZone
+        } else {
+          ss_inZone_a = rbind(ss_inZone_a,ss_inZone); ss_outZone_a = rbind(ss_outZone_a,ss_outZone)
+        }
+      }
+      # bind newly shuffled subjects back 
+      inZone = rbind(inZone,ss_inZone_a); outZone = rbind(outZone,ss_outZone_a)
+      #inZone
+      # compute fft
+      zn_fft_surr = zoneFFT(inZone, outZone, dv = dv)
+      surrDiff = zn_fft_surr$mnDiff
+      if ( dim(zn_fft_surr$diffDat)[1] != length(fullSubs) ){
+        warning("Missing surrogate subjects")
+      }
+    }
+    #length(unique(inZone$subject))
+    print(i)
+    if (i == 1){allPerms = surrDiff} else {allPerms = rbind(allPerms,surrDiff)}
+  }
+  print( Sys.time() - start )
+  # label the colnames
+  colnames(allPerms) = zn_fft_orig$hz
+  # return output
+  return(list(obs=obs_fft,surr=allPerms))
+}
+# test
+#zonePerm_nd(inDat = zoneTest$ret, nPerm = 10, erTask = "M", dv = "rt", resid = T, seed = 18)
+
+```

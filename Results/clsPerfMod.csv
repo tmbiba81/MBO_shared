@@ -1,0 +1,10 @@
+"","coefficients.Estimate","coefficients.Std..Error","coefficients.t.value","coefficients.Pr...t.."
+"(Intercept)",0.836,0.012,66.878,0
+"nicotine",-0.002,0.018,-0.121,0.904
+"sex",-0.008,0.014,-0.589,0.557
+"cannabis",-0.007,0.016,-0.403,0.688
+"anxiety",-0.002,0.016,-0.144,0.886
+"OCD",-0.005,0.023,-0.212,0.833
+"PTSD",-0.011,0.021,-0.539,0.591
+"MDD",0.005,0.017,0.306,0.76
+"dayTime_shift_cent",0.001,0.006,0.122,0.903

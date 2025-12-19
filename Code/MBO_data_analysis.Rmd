@@ -1,0 +1,2906 @@
+---
+title: "MBO_data_analysis"
+author: "Thomas Biba"
+date: '2023-06-01'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+#install.packages("knitr")
+library("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Details on r versions
+
+1) You need proper version of fortran to install eegUtils
+
+# Load and organize data
+
+Specify Github dir 
+
+```{r}
+master_path = "~/Documents/GitHub/MBO_shared/"
+```
+
+## Load libraries
+
+```{r echo = F}
+libraries = c('tidyverse','robustHD','DescTools','e1071','prospectr','ggsignif','CircStats','psycho','reshape2','imager','pwr','Rmisc','seewave','remotes',
+              'data.table','lmerTest','roll','lmtest','rstatix','CircStats','circular','Directional','gridExtra','cowplot','ggpubr','emmeans',
+              'abind','spectral','lme4','numDeriv','scales','svglite','rstatix','boot','coin','BayesFactor', 'MuMIn', 'rsq') 
+#  'hausekeep' 'fuzzySim', 'stats'- won't load on other comp
+#install.packages('stats')
+#invisible(lapply(libraries, install.packages, character.only = TRUE))
+invisible(lapply(libraries, library, character.only = TRUE))
+detrend <- prospectr::detrend; select <- dplyr::select; filter <- dplyr::filter; group_by <- dplyr::group_by; summarize <- dplyr::summarize; spectro <- seewave::spectro
+# note: need to download fortran compiler to download EEGutils from github <https://mac.r-project.org/tools/>
+#remotes::install_github("craddm/eegUtils")
+library("eegUtils",warn.conflicts=F, quietly=T) 
+#install_github("thomasp85/patchwork")           # install patchwork for joining plots
+#library(patchwork)
+rename <- dplyr::rename
+#install.packages("BayesFactor")
+```
+
+## Load cleaned data
+
+```{r echo = F, include=F}
+data_path = paste(master_path,"Data/Cleaned/postExclude/",sep="")
+for (v in 1:3){
+  #v = 1
+  if (v == 1){dir_name = "pilot_1"} else if (v == 2){dir_name = "pilot_2"} else if (v == 3){dir_name = "confirmatory_experiment"}
+  assign( paste("SumDat_v",v,sep=""), read_csv(paste(data_path,dir_name,"/ERsumDat_abc_v",v,".csv",sep="")) )
+  assign( paste("EncDat_v",v,sep=""), read_csv(paste(data_path,dir_name,"/EncDat_abc_v",v,".csv",sep="")) )
+  assign( paste("RetDat_v",v,sep=""), read_csv(paste(data_path,dir_name,"/RetDat_abc_v",v,".csv",sep="")) ) 
+}
+
+```
+
+## Get exclusion metrics
+
+Load non-excluded data
+
+```{r}
+# load data
+dat_path = paste(master_path,"/Data/Cleaned/All/confirmatory_experiment/",sep="")
+v3_sumDat = read_csv(paste(dat_path,"ERsumDat_cl_v3.csv",sep=""))
+# get exclusion metrics
+origSub = length(v3_sumDat$subject)
+paste("Subjects with more than 25% skipped frames = ",length(which(v3_sumDat$skp_fr > .25)),sep="")
+clsExclude = unique(c(v3_sumDat$subject[which(v3_sumDat$cls_pnr > .25)],v3_sumDat$subject[which(v3_sumDat$cls_binom_p > .05)]))
+paste("Subjects with more than 25% missed classification and/or below chance = ",length(clsExclude),sep="")
+paste("Subjects with below chance memory = ",length(which(v3_sumDat$asso_binom_p > .05)),sep="")
+exclSub = length(unique(c(v3_sumDat$subject[which(v3_sumDat$skp_fr > .25)],v3_sumDat$subject[which(v3_sumDat$cls_pnr > .25)],
+  v3_sumDat$subject[which(v3_sumDat$cls_binom_p > .05)],v3_sumDat$subject[which(v3_sumDat$asso_binom_p > .05)])))
+paste("Unique subjects excluded = ",exclSub,sep="")
+ExptSub = origSub-exclSub
+paste("Unique subjects after exclusion = ",ExptSub,sep="")
+```
+
+Get demographics
+
+```{r}
+n = length(unique(RetDat_v3$subject))
+SumDem = RetDat_v3 %>% group_by(subject) %>% summarize(age=unique(age_response), sex=unique(sex_response), hand=unique(handedness_response))
+paste("Number of subjects above chance, n = ",n,sep="")
+paste("Mean Age (Years) = ",mean(SumDem$age, na.rm=T),sep="")
+paste("SD Age (Years) = ",sd(SumDem$age, na.rm=T),sep="")
+paste("Num Male = ",length(which(SumDem$sex == "Male")),sep="")
+paste("Num Female = ",length(which(SumDem$sex == "Female")),sep="")
+paste("Num Right = ",length(which(SumDem$hand == "Right")),sep="")
+paste("Num Left = ",length(which(SumDem$hand == "Left")),sep="")
+unique(RetDat_v3$sex_response)
+```
+
+Frames
+
+```{r}
+EncDat_v3$drpFrm <- ifelse(EncDat_v3$SOAdev > c(1000/60),1,0)
+frDat = EncDat_v3 %>% group_by(subject) %>% summarize(numFr = sum(drpFrm))
+mean(frDat$numFr); sd(frDat$numFr)
+hist(frDat$numFr)
+```
+
+Fast RT's
+
+```{r}
+encProp = EncDat_v3 %>% group_by(subject) %>% summarize(prop_srt = length(latency[latency < 300 & !is.na(latency)]))
+retProp = EncDat_v3 %>% group_by(subject) %>% summarize(prop_srt = length(latency[latency < 300 & !is.na(latency)]))
+mean(encProp$prop_srt)/448; mean(retProp$prop_srt)/672
+```
+
+
+### For pilot experiment 1
+
+Load non-excluded data
+
+```{r}
+# load data
+dat_path = "~/Documents/GitHub/MBO/Data/Cleaned/All/v1/"
+v1_sumDat = read_csv(paste(dat_path,"ERsumDat_cl_v1.csv",sep=""))
+# get exclusion metrics
+origSub = length(v1_sumDat$subject)
+paste("Subjects with more than 25% skipped frames = ",length(which(v1_sumDat$skp_fr > .25)),sep="")
+clsExclude = unique(c(v1_sumDat$subject[which(v1_sumDat$cls_pnr > .25)],v1_sumDat$subject[which(v1_sumDat$cls_binom_p > .05)]))
+paste("Subjects with more than 25% missed classification and/or below chance = ",length(clsExclude),sep="")
+paste("Subjects with below chance memory = ",length(which(v1_sumDat$asso_binom_p > .05)),sep="")
+exclSub = length(unique(c(v1_sumDat$subject[which(v1_sumDat$skp_fr > .25)],v1_sumDat$subject[which(v1_sumDat$cls_pnr > .25)],
+  v1_sumDat$subject[which(v1_sumDat$cls_binom_p > .05)],v1_sumDat$subject[which(v1_sumDat$asso_binom_p > .05)])))
+paste("Unique subjects excluded = ",exclSub,sep="")
+ExptSub = origSub-exclSub
+paste("Unique subjects after exclusion = ",ExptSub,sep="")
+```
+
+Get demographics
+
+```{r}
+n = length(unique(RetDat_v1$subject))
+SumDem = RetDat_v1 %>% group_by(subject) %>% summarize(age=unique(age_response), sex=unique(sex_response), hand=unique(handedness_response))
+paste("Mean Age = ",round(mean(SumDem$age, na.rm=T)),sep=""); paste("SD Age = ", round(sd(SumDem$age, na.rm=T)),sep="")
+paste("Num Male = ",length(which(SumDem$sex == "Male")),sep="") 
+paste("Num Female = ",length(which(SumDem$sex == "Female")),sep="") 
+paste("Num Right = ",length(which(SumDem$hand == "Right")),sep="") 
+paste("Num Left = ",length(which(SumDem$hand == "Left")),sep="") 
+```
+
+Other info
+
+```{r}
+RetDat_v1$drpFrm <- ifelse(RetDat_v1$SOAdev > c(1000/60),1,0)
+frDat = RetDat_v1 %>% group_by(subject) %>% summarize(numFr = sum(drpFrm, na.rm=T))
+mean(frDat$numFr); sd(frDat$numFr)
+hist(frDat$numFr)
+```
+
+### For pilot experiment 2
+
+Load non-excluded data
+
+```{r}
+# load data
+dat_path = "/Users/thomasbiba/Dropbox/Grad/Projects/MemBehavOscil/Data/Cleaned/All/v2/"
+v2_sumDat = read_csv(paste(dat_path,"ERsumDat_cl_v2.csv",sep=""))
+# get exclusion metrics
+origSub = length(v2_sumDat$subject)
+paste("Subjects with more than 25% skipped frames = ",length(which(v2_sumDat$skp_fr > .25)),sep="")
+clsExclude = unique(c(v2_sumDat$subject[which(v2_sumDat$cls_pnr > .25)],v2_sumDat$subject[which(v2_sumDat$cls_binom_p > .05)]))
+paste("Subjects with more than 25% missed classification and/or below chance = ",length(clsExclude),sep="")
+paste("Subjects with below chance memory = ",length(which(v2_sumDat$asso_binom_p > .05)),sep="")
+exclSub = length(unique(c(v2_sumDat$subject[which(v2_sumDat$skp_fr > .25)],v2_sumDat$subject[which(v2_sumDat$cls_pnr > .25)],
+  v2_sumDat$subject[which(v2_sumDat$cls_binom_p > .05)],v2_sumDat$subject[which(v2_sumDat$asso_binom_p > .05)])))
+paste("Unique subjects excluded = ",exclSub,sep="")
+ExptSub = origSub-exclSub
+paste("Unique subjects after exclusion = ",ExptSub,sep="")
+```
+
+Get demographics
+
+```{r}
+n = length(unique(RetDat_v2$subject))
+SumDem = RetDat_v2 %>% group_by(subject) %>% summarize(age=unique(age_response), sex=unique(sex_response), hand=unique(handedness_response))
+paste("Mean Age = ",round(mean(SumDem$age, na.rm=T)),sep=""); paste("SD Age = ", round(sd(SumDem$age, na.rm=T)),sep="")
+paste("Num Male = ",length(which(SumDem$sex == "Male")),sep="") 
+paste("Num Female = ",length(which(SumDem$sex == "Female")),sep="") 
+paste("Num Right = ",length(which(SumDem$hand == "Right")),sep="") 
+paste("Num Left = ",length(which(SumDem$hand == "Left")),sep="") 
+```
+
+Other info
+
+```{r}
+EncDat_v4$drpFrm <- ifelse(EncDat_v4$SOAdev > c(1000/60),1,0)
+frDat = EncDat_v4 %>% group_by(subject) %>% summarize(numFr = sum(drpFrm))
+mean(frDat$numFr); sd(frDat$numFr)
+hist(frDat$numFr)
+```
+
+
+# Ch 0 - first figure
+
+Accuracy 
+
+```{r}
+if (!dir.exists(paste(plot_path, "Fig_1", sep=""))) {
+  dir.create(paste(plot_path, "Fig_1", sep=""))
+}
+# # things to copy and paste 
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"
+# get summary data
+memSumDat = RetDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(asso_hit, na.rm=T), hr_res = mean(hr_resid_tr, na.rm=T))
+memSumDat$dv = "Retrieval"
+clsSumDat = EncDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(class_TS_hit, na.rm=T), hr_res = mean(hr_resid_tr, na.rm=T))
+clsSumDat$dv = "Classification"
+if (any((clsSumDat$subject == memSumDat$subject) == F)){
+  Warning("Subjects do not match")
+}
+pldf = rbind(memSumDat,clsSumDat)
+yAxLab="Hit Rate"; titName="Overall Accuracy"; colors = c("turquoise3","maroon3"); labs = c("Object \n Classification","Associative \n Retrieval")
+f0_p3 <- ggplot(pldf, aes(x=dv, y=hr_res)) + theme_classic() +
+          geom_violin(aes(color = dv, fill = dv), alpha = .3, linewidth=0) + 
+          geom_jitter(aes(color=dv, fill=dv), binaxis='y', stackdir='center', size=.05, width = 0.2, alpha = .4) +
+          stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = .2, size = .12, stroke = 0) +
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + #ylim(c(0,1)) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, face="plain", hjust = .5, margin = margin(b = 2))) +
+          scale_x_discrete(labels = labs) +
+          scale_y_continuous(n.breaks = 8, limits=c(0,1)) +
+          labs(y= yAxLab, x = "Depenendent Measure") + ggtitle(titName) + theme(legend.position="none") +
+          annotate("segment", x = 1, y = .97, xend = 2, yend = .97, size = axLinSize) +
+          annotate("text", x = 1.5, y = .99, label = "***", size = 2)
+f0_p3
+# check normality
+shapiro.test(filter(pldf, dv == "Retrieval")$hr_res)
+shapiro.test(filter(pldf, dv == "Classification")$hr_res)
+# run test 
+wilcox.test(filter(pldf, dv == "Classification")$hr_res, filter(pldf, dv == "Retrieval")$hr_res, 
+            paired=TRUE, conf.int = TRUE, conf.level = 0.95, alternative = "two.sided")
+ggsave(paste(plot_path,"Figure_1/fig_1_c.pdf",sep=""), f0_p3,width = 35, height = 35, units = "mm")
+```
+
+Make a joint plot
+
+```{r}
+# set adjusted parameters
+ar = 1.8; ln_size = 1; titSiz = 10; axLabSiz = 7; axTicSize = .8; axLinSize = .6; asTxtSize = 6  #; ylinRg = c(8,15);
+# ---------------------- plot 0 -----------------------------
+df <- data.frame()
+p1 <- ggplot() + theme_void()
+p1
+# ---------------------- plot 2 ----------------------------
+yAxLab="Hit Rate"; titName="Overall Accuracy"; colors = c("turquoise3","maroon3"); labs = c("Object\nClassification","Associative\nMemory")
+p2 <- ggplot(pldf, aes(x=dv, y=hr_res)) + theme_classic() +
+          geom_violin(aes(color = dv, fill = dv), alpha = .2) + 
+          geom_jitter(aes(color=dv, fill=dv), binaxis='y', stackdir='center', size=.4, width = 0.25, alpha = .4) +
+          stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = .5, size = .05) +
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + #ylim(c(0,1)) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, face="bold", hjust = .5)) +
+          scale_x_discrete(labels = labs) + # labs
+          scale_y_continuous(n.breaks = 8, limits=c(0,1)) +
+          labs(y= yAxLab, x = "Test") + ggtitle(titName) + theme(legend.position="none") +
+          coord_fixed(ratio = ar) +
+          annotate("segment", x = 1, y = .97, xend = 2, yend = .97, size = .5) +
+          annotate("text", x = 1.5, y = .99, label = "***", size = 3)
+p2
+# ---------------------- Combine Plots -----------------------------
+#plot_path = "/Users/thomasbiba/Dropbox/Grad/Projects/MemBehavOscil/Documents/Current_drafts/Figures/"
+plot_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,1,1,1,1),
+                         c(1,1,1,1,1),
+                         c(1,1,1,1,1),
+                         c(1,1,1,1,1),
+                         c(1,1,1,1,1),
+                         c(1,1,2,2,2),
+                         c(1,1,2,2,2),
+                         c(1,1,2,2,2)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_1 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b", "c"), size = 13,
+                  x = c(0, 0, .58), y = c(.99, .4, .4)) # Add labels
+fig_1
+ggsave(fig_1, file = paste(plot_path,"fig_1.pdf",sep=""))
+```
+
+## With previous versions 1 and 2
+
+Orangize Data
+
+```{r}
+# get summary data vor v1
+memSumDat = RetDat_v1 %>% group_by(subject) %>% summarize(hr = mean(asso_hit, na.rm=T))
+memSumDat$dv = "Memory"
+clsSumDat = EncDat_v1 %>% group_by(subject) %>% summarize(hr = mean(class_TS_hit, na.rm=T))
+clsSumDat$dv = "Classification"
+if (any((clsSumDat$subject == memSumDat$subject) == F)){
+  Warning("Subjects do not match")
+}
+pldf_v1 = rbind(memSumDat,clsSumDat)
+# get summary data vor v2
+memSumDat = RetDat_v2 %>% group_by(subject) %>% summarize(hr = mean(asso_hit, na.rm=T))
+memSumDat$dv = "Memory"
+clsSumDat = EncDat_v2 %>% group_by(subject) %>% summarize(hr = mean(class_TS_hit, na.rm=T))
+clsSumDat$dv = "Classification"
+if (any((clsSumDat$subject == memSumDat$subject) == F)){
+  Warning("Subjects do not match")
+}
+pldf_v2 = rbind(memSumDat,clsSumDat)
+# run t-tests
+t.test(filter(pldf_v1, dv == "Classification")$hr,filter(pldf_v1, dv == "Memory")$hr, paired=T)
+mean(filter(pldf_v1, dv == "Classification")$hr); sd(filter(pldf_v1, dv == "Classification")$hr)
+mean(filter(pldf_v1, dv == "Memory")$hr); sd(filter(pldf_v1, dv == "Memory")$hr)
+t.test(filter(pldf_v2, dv == "Classification")$hr,filter(pldf_v2, dv == "Memory")$hr, paired=T)
+mean(filter(pldf_v2, dv == "Classification")$hr); sd(filter(pldf_v2, dv == "Classification")$hr)
+mean(filter(pldf_v2, dv == "Memory")$hr); sd(filter(pldf_v2, dv == "Memory")$hr)
+
+```
+
+Make plots
+
+```{r}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+ar = 2.2; ln_size = 1; titSiz = 12; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8; dt_sz = 1; dt_alpha = .5; vio_alpha = .3
+# ---------------------- plot 1 ----------------------------
+yAxLab="Hit Rate"; titName="Overall Accuracy Pilot 1"; colors = c("turquoise3","maroon3"); labs = c("Object\nClassification","Associative\nMemory")
+p1 <- ggplot(pldf_v1, aes(x=dv, y=hr)) + theme_classic() +
+          geom_violin(aes(color = dv, fill = dv), alpha = vio_alpha) + 
+          #stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = 1, size = .8) +
+          #geom_dotplot(aes(color=dv, fill=dv), binaxis='y', stackdir='center', dotsize=.3) +
+          geom_jitter(aes(color=dv, fill=dv), binaxis='y', stackdir='center', size=dt_sz, width = 0.25, alpha = dt_alpha) +
+          #geom_line(aes(group=subject), alpha = .15) +
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + #ylim(c(0,1)) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, face="bold", hjust = .5)) +
+          scale_x_discrete(labels = labs) +
+          scale_y_continuous(n.breaks = 8, limits=c(.2,1)) +
+          labs(y= yAxLab, x = "Test") + ggtitle(titName) + theme(legend.position="none") +
+          coord_fixed(ratio = ar) +
+          stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = .5, size = .05) +
+          geom_signif(comparisons = list(c("Classification", "Memory")), y_position = .965, annotation = c("***"), vjust = .2, textsize = 4)
+
+p1
+# ---------------------- Plot 2 -----------------------------
+yAxLab="Hit Rate"; titName="Overall Accuracy Pilot 2"; colors = c("turquoise3","maroon3"); labs = c("Object\nClassification","Associative\nMemory")
+p2 <- ggplot(pldf_v2, aes(x=dv, y=hr)) + theme_classic() +
+          geom_violin(aes(color = dv, fill = dv), alpha = vio_alpha) + 
+          #stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = 1, size = .8) +
+          #geom_dotplot(aes(color=dv, fill=dv), binaxis='y', stackdir='center', dotsize=.3) +
+          geom_jitter(aes(color=dv, fill=dv), binaxis='y', stackdir='center', size=dt_sz, width = 0.25, alpha = dt_alpha) +
+          #geom_line(aes(group=subject), alpha = .15) +
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + #ylim(c(0,1)) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, face="bold", hjust = .5)) +
+          scale_x_discrete(labels = labs) +
+          scale_y_continuous(n.breaks = 8, limits=c(.2,1)) +
+          labs(y= yAxLab, x = "Test") + ggtitle(titName) + theme(legend.position="none") +
+          coord_fixed(ratio = ar) +
+          stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = .5, size = .05) +
+          geom_signif(comparisons = list(c("Classification", "Memory")), y_position = .94, annotation = c("***"), vjust = .2, textsize = 4)
+p2
+# ---------------------- Combine Plots -----------------------------
+#plot_path = "/Users/thomasbiba/Dropbox/Grad/Projects/MemBehavOscil/Documents/Current_drafts/Figures/"
+plot_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,2)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s1 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b"), size = 13,
+                  x = c(0, .5), y = c(.92, .92)) # Add labels
+fig_s1
+ggsave(fig_s1, file = paste(plot_path,"fig_s1.pdf",sep=""))
+```
+
+# Ch 1 - Memory formation is theta rythmic
+
+## Visualize memory time-courses
+
+Group time-course in subsequent memory HR
+
+```{r}
+# get mem and class values 
+AvgSOA_memhr = soa_avg(RetDat_v3_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)[[1]]
+plt_df_memhr = AvgSOA_memhr %>% group_by(SOAcorr_ct) %>% summarize(mn = mean(hr), se = sd(hr)/sqrt(length(unique(AvgSOA_memhr$subject))), ub = mn+se, lb = mn-se) 
+plt_df_memhr$Condition = "Memory"
+# make plot
+ar = 5000; ln_size = 1.5; titSiz = 20; axLabSiz = 12; axTicSize = 1; axLinSize = 1; asTxtSize = 10; yrng = c(.6,.7)
+ts_plt = ggplot(plt_df_memhr, aes(x=SOAcorr_ct,y=mn, color=Condition)) + # 
+  geom_line(aes(color=Condition), size=1) + scale_x_continuous(n.breaks = 14) +
+  geom_ribbon(aes(ymin=lb,ymax=ub, fill=Condition), alpha=0.5, color = NA) + theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5), legend.position = c("none")) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle("Memory Accuracy by SOA") + 
+  coord_fixed(ratio = ar) +
+  scale_fill_manual(values=c("maroon3")) + 
+  scale_color_manual(values=c("maroon3"))  
+ts_plt
+```
+
+Get two example time-series (one low theta, one high theta)
+
+```{r}
+examp_sub_high_o = hr_fft_pf %>% filter(hz == 10) %>% arrange(desc(pwr))
+examp_sub_high = examp_sub_high_o[1,]$subject; examp_sub_high_sn = examp_sub_high_o[1,]$sub_num
+examp_sub_avg_o = hr_fft_pf %>% filter(hz == 7) %>% arrange(desc(pwr))
+examp_sub_avg = examp_sub_avg_o[1,]$subject; examp_sub_avg_sn = examp_sub_avg_o[1,]$sub_num
+examp_sub_low_o = hr_fft_pf %>% filter(hz == 3) %>% arrange(desc(pwr))
+examp_sub_low = examp_sub_low_o[1,]$subject; examp_sub_low_sn = examp_sub_low_o[1,]$sub_num
+```
+
+get ts and plot for each
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+# common features across plots
+titSiz = 9.5; lgndU = .5; ln_size = 1; pt_size = 1.5; fc = "bold"; lgndTxt = 6; ar = 1500
+lgTitsz = 8; axLabSiz = 8; axTicSize = .8; axLinSize = .8; asTxtSize = 6; sc_pt_sz = .2; sum_pt_sz = .03; yrng = c(0,25)
+# scale them
+sf = .95
+titSiz = titSiz*sf; lgndU = lgndU*sf; ln_size = ln_size*sf; pt_size = pt_size*sf; fc = "bold"; lgndTxt = lgndTxt*sf;
+lgTitsz = lgTitsz*sf; axLabSiz = axLabSiz*sf; axTicSize = axTicSize*sf; axLinSize = axLinSize*sf; asTxtSize = asTxtSize*sf;
+sc_pt_sz = sc_pt_sz*sf; sum_pt_sz = sum_pt_sz*sf
+# get all SOA averages
+AvgSOA_memhr = soa_avg(RetDat_v4_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)[[1]]
+# plot ts for low
+yrng = c(.36,.8)
+examp_sub_low_ts = filter(AvgSOA_memhr, subject == examp_sub_low)
+s1 = ggplot(examp_sub_low_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=1) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc), legend.position = c("none")) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Subject ",examp_sub_low_sn," (PF=3Hz)",sep="")) + 
+  coord_fixed(ratio = ar) 
+# plot ts for average
+yrng = c(.56,1)
+examp_sub_avg_ts = filter(AvgSOA_memhr, subject == examp_sub_avg)
+s2 = ggplot(examp_sub_avg_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=1) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc), legend.position = c("none")) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Subject ",examp_sub_avg_sn," (PF=7Hz)",sep="")) + 
+  coord_fixed(ratio = ar) 
+# plot ts for high
+yrng = c(.56,1)
+examp_sub_high_ts = filter(AvgSOA_memhr, subject == examp_sub_high)
+s3 = ggplot(examp_sub_high_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=1) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc), legend.position = c("none")) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Subject ",examp_sub_high_sn," (PF=10Hz)",sep="")) + 
+  coord_fixed(ratio = ar) 
+# --------------------------- Join to make figure --------------------------------
+# set path
+layMat = as.matrix(rbind(c(1,1,2,2,3,3)))
+# returns a gtable (gt)
+gt = arrangeGrob(s1,s2,s3,
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_en = as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a","b","c"), size = 14,
+                  x = c(0, .33, .66), y = c(.72, .72, .72)) # Add labels
+fig_en
+# save
+plot_path = paste(master_path,"Results/",sep="")
+ggsave(plot = fig_en, file = paste(plot_path,"fig_e1.pdf",sep=""))
+```
+
+### For prior versions
+
+```{r}
+# v1
+v1_hr = soa_avg(RetDat_v1, erTask = "M", dv = "hr", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v1_rt = soa_avg(RetDat_v1, erTask = "M", dv = "rt", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v1_ies = soa_avg(RetDat_v1, erTask = "M", dv = "ies", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v1_hr; v1_rt; v1_ies
+# v2
+v2_hr = soa_avg(RetDat_v2, erTask = "M", dv = "hr", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v2_rt = soa_avg(RetDat_v2, erTask = "M", dv = "rt", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v2_ies = soa_avg(RetDat_v2, erTask = "M", dv = "ies", resid = F, rand = F, NArm = T, drp = T)[[1]]
+v2_hr; v2_rt; v2_ies
+```
+
+
+## Stationary oscillations in memory 
+
+Create perm dists and save - if not done previously (takes a while to re-run)
+
+```{r}
+# set perm path
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+# list files
+files = list.files(perm_path)
+# For memory 
+if (any(files == "FFTsur_mem_hr.csv") == FALSE){
+  mem_hr = FFT_permutation_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "hr", resid = T, lat = 0, seed = 18)   # for HR
+  write_csv(mem_hr,paste(perm_path,"FFTsur_mem_hr.csv",sep=""))
+} else {print(paste("Permutation distributions for HR already exist, and do not need to be regenerated"))}
+if (any(files == "FFTsur_mem_rt.csv") == FALSE){
+  
+  mem_rt = FFT_permutation_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "rt", resid = T, lat = 0, seed = 18)   # For RT
+  write_csv(mem_rt,paste(perm_path,"FFTsur_mem_rt.csv",sep=""))
+} else {print(paste("Permutation distributions for RT already exist, and do not need to be regenerated"))}
+if (any(files == "FFTsur_mem_ies.csv") == FALSE){
+  mem_ies = FFT_permutation_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "ies", resid = T, lat = 0, seed = 18) # For IES
+  write_csv(mem_ies,paste(perm_path,"FFTsur_mem_ies.csv",sep=""))
+} else {print(paste("Permutation distributions for IES already exist, and do not need to be regenerated"))}
+
+```
+
+Load previously saved dists and Run FFT analysis
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+mem_hr_v3 = read_csv(paste(perm_path,"FFTsur_mem_hr.csv",sep=""))
+mem_rt_v3 = read_csv(paste(perm_path,"FFTsur_mem_rt.csv",sep=""))
+mem_ies_v3 = read_csv(paste(perm_path,"FFTsur_mem_ies.csv",sep=""))
+# for memory
+memHr_fft = FFT_analysis(inDat = RetDat_v3_res, inPerm = mem_hr_v3, erTask = "M", dv = "hr", resid = T, 
+                         NArm = T, zStat = T, lat = 0)
+memRt_fft = FFT_analysis(inDat = RetDat_v3_res, inPerm = mem_rt_v3, erTask = "M", dv = "rt", resid = T, 
+                         NArm = T, zStat = T, lat = 0)
+memIes_fft = FFT_analysis(inDat = RetDat_v3_res, inPerm = mem_ies_v3, erTask = "M", dv = "ies", resid = T, 
+                          NArm = T, zStat = T, lat = 0)
+memHr_fft; memRt_fft; memIes_fft
+FFT_plot(memHr_fft[[2]][[1]], ylinRg = c(9.5,13.5), ar = 2, ln_size = 1.5,  
+                              titSiz = 18, axLabSiz = 13, axTicSize = 1, axLinSize = 1, asTxtSize = 10, 
+                              colors = c("grey","maroon3"), lines = c("dashed","solid"), 
+                              titName="Memory Accuracy FFT", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "plain") + annotate("segment", x = 6.5, y = 13, xend = 7.5, yend = 13, size = 1.5, color = "maroon3")
+```
+
+Get CI's
+
+```{r}
+get_perm_ci(mem_hr_v3, hz = 7, tail = "One", norm = T)
+get_perm_ci(mem_rt_v3, hz = 13, tail = "One", norm = T)
+get_perm_ci(mem_ies_v3, hz = 7, tail = "One", norm = T)
+```
+
+Plot for other DV's
+
+```{r}
+memHr_fft; memRt_fft; memIes_fft
+memHr_fft[[2]][[1]]$dv <- "HR"; memRt_fft[[2]][[1]]$dv <- "RT"; memIes_fft[[2]][[1]]$dv <- "IES"
+memFFT = rbind(memHr_fft[[2]][[1]],memRt_fft[[2]][[1]],memIes_fft[[2]][[1]])
+FFT_plot_mlt(memFFT, ylinRg = c(9,14), ar = 1.8, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("maroon3","maroon4","maroon1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="FFT Permutation Test", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "plain", lgndU = 1, lgnd_pz = "right", lgndTit = "DV", lgndTxt = 8, lgTitsz = 8)
+```
+
+### run for prior versions
+
+Create perm dists
+
+```{r}
+# for prev vers
+perm_path = paste(master_path,"Distributions/",sep="")
+# For memory 
+for (v in 1:2){
+  #v = 2
+  # specify the version path 
+  perm_path_vers = paste(perm_path,"pilot_",v,"/",sep="")
+  # list files
+  files = list.files(perm_path_vers)
+  if (any(files == "FFTsur_mem_hr.csv") == FALSE){
+    mem_hr = FFT_permutation_nd(get(paste("RetDat_v",v,sep="")), nPerm = 3000, erTask = "M", dv = "hr", lat = 100, resid = F, seed = 18)  # for HR
+    write_csv(mem_hr,paste(perm_path,"v",v,"/FFTsur_mem_hr.csv",sep=""))
+  }
+  if (any(files == "FFTsur_mem_rt.csv") == FALSE){
+    mem_rt = FFT_permutation_nd(get(paste("RetDat_v",v,sep="")), nPerm = 3000, erTask = "M", dv = "rt", lat = 100, resid = F, seed = 18) # For RT
+    write_csv(mem_rt,paste(perm_path,"v",v,"/FFTsur_mem_rt.csv",sep=""))
+  }
+  if (any(files == "FFTsur_mem_ies.csv") == FALSE){
+    mem_ies = FFT_permutation_nd(get(paste("RetDat_v",v,sep="")), nPerm = 3000, erTask = "M", dv = "ies", lat = 100, resid = F, seed = 18) # For IES
+    write_csv(mem_ies,paste(perm_path,"v",v,"/FFTsur_mem_ies.csv",sep=""))
+  }
+}
+
+```
+
+Load perm dists and run analysis for V1
+
+```{r}
+# Load dists
+perm_path = paste(master_path,"Distributions/pilot_1/",sep="")
+mem_hr_v1 = read_csv(paste(perm_path,"FFTsur_mem_hr.csv",sep=""))
+mem_rt_v1 = read_csv(paste(perm_path,"FFTsur_mem_rt.csv",sep=""))
+mem_ies_v1 = read_csv(paste(perm_path,"FFTsur_mem_ies.csv",sep=""))
+# for memory
+memHr_fft_v1 = FFT_analysis(inDat = RetDat_v1, inPerm = mem_hr_v1, erTask = "M", dv = "hr", lat = 100, resid = F, zStat = T)
+memRt_fft_v1 = FFT_analysis(inDat = RetDat_v1, inPerm = mem_rt_v1, erTask = "M", dv = "rt", lat = 100, resid = F, zStat = T)
+memIes_fft_v1 = FFT_analysis(inDat = RetDat_v1, inPerm = mem_ies_v1, erTask = "M", dv = "ies", lat = 100, resid = F, zStat = T)
+memHr_fft_v1; memRt_fft_v1; memIes_fft_v1
+```
+
+Load perm dists and run analysis for V2
+
+```{r}
+# Load dists
+perm_path = paste(master_path,"Distributions/pilot_2/",sep="")
+mem_hr_v2 = read_csv(paste(perm_path,"FFTsur_mem_hr.csv",sep=""))
+mem_rt_v2 = read_csv(paste(perm_path,"FFTsur_mem_rt.csv",sep=""))
+mem_ies_v2 = read_csv(paste(perm_path,"FFTsur_mem_ies.csv",sep=""))
+# for memory
+memHr_fft_v2 = FFT_analysis(inDat = RetDat_v2, inPerm = mem_hr_v2, erTask = "M", dv = "hr", lat = 100, resid = F, zStat = T)
+memRt_fft_v2 = FFT_analysis(inDat = RetDat_v2, inPerm = mem_rt_v2, erTask = "M", dv = "rt", lat = 100, resid = F, zStat = T)
+memIes_fft_v2 = FFT_analysis(inDat = RetDat_v2, inPerm = mem_ies_v2, erTask = "M", dv = "ies", lat = 100, resid = F, zStat = T)
+memHr_fft_v2; memRt_fft_v2; memIes_fft_v2
+```
+
+```{r}
+mean(c(0.310,0.351))
+```
+
+
+### Joint plot
+
+Bind data frames
+
+```{r}
+# bind values for v1
+memHr_fft_v1[[2]][[1]]$dv <- "HR"; memRt_fft_v1[[2]][[1]]$dv <- "RT"; memIes_fft_v1[[2]][[1]]$dv <- "IES"
+memFFT_v1 = rbind(memHr_fft_v1[[2]][[1]],memRt_fft_v1[[2]][[1]],memIes_fft_v1[[2]][[1]])
+# bind values for v2
+memHr_fft_v2[[2]][[1]]$dv <- "HR"; memRt_fft_v2[[2]][[1]]$dv <- "RT"; memIes_fft_v2[[2]][[1]]$dv <- "IES"
+memFFT_v2 = rbind(memHr_fft_v2[[2]][[1]],memRt_fft_v2[[2]][[1]],memIes_fft_v2[[2]][[1]])
+```
+
+Make joint plot
+
+```{r}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+ar = 1.2; ln_size = 1; titSiz = 12; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8; dt_sz = .6
+lgndTxt = 6; lgTitsz = 8; lgndU = .5; fc = "bold"
+# ---------------------- plot 1 ----------------------------
+p1 = FFT_plot_mlt(memFFT_v1, ylinRg = c(6.5,14), ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("maroon3","maroon4","maroon1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Memory FFT Pilot 1", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = fc, lgndU = lgndU, lgnd_pz = "right", lgndTit = "DV", lgndTxt = lgndTxt, lgTitsz = lgTitsz) +
+                                 annotate("segment", x = 4.5, y = 13, xend = 5.5, yend = 13, size = ln_size, color = "grey")
+# ---------------------- Plot 2 -----------------------------
+p2 = FFT_plot_mlt(memFFT_v2, ylinRg = c(6.5,14), ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("maroon3","maroon4","maroon1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Memory FFT Pilot 2", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = fc, lgndU = lgndU, lgnd_pz = "right", lgndTit = "DV", lgndTxt = lgndTxt, lgTitsz = lgTitsz)
+# ---------------------- Combine Plots -----------------------------
+plot_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,2)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s2 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b"), size = 13,
+                  x = c(0, .5), y = c(.83, .83)) # Add labels
+fig_s2
+ggsave(fig_s2, file = paste(plot_path,"fig_s2.pdf",sep=""))
+```
+
+
+## Time-frequency analysis
+
+Create distributions (optional re-run)
+
+```{r echo = F}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+files = list.files(perm_path)
+# for acc
+if (any(files == "mem_hr_TFAperm_3000_8edg.csv") == FALSE){
+  mem_hr_TFAperm = TFA_perm_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "hr", resid = T, NArm = T, seed = 18, lat=0, 
+                          REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_hr_TFAperm$meltDat,paste(perm_path,"mem_hr_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for HR already exist, and do not need to be regenerated"))}
+# for rt
+if (any(files == "mem_hr_TFAperm_3000_8edg.csv") == FALSE){
+  mem_rt_TFAperm = TFA_perm_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "rt", resid = T, NArm = T, seed = 18, lat=0, 
+                          REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_rt_TFAperm$meltDat,paste(perm_path,"mem_rt_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for RT already exist, and do not need to be regenerated"))}
+# for ies
+if (any(files == "mem_hr_TFAperm_3000_8edg.csv") == FALSE){
+  mem_ies_TFAperm = TFA_perm_nd(RetDat_v3_res, nPerm = 3000, erTask = "M", dv = "ies", resid = T, NArm = T, seed = 18, lat=0, 
+                          REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_ies_TFAperm$meltDat,paste(perm_path,"mem_ies_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for IES already exist, and do not need to be regenerated"))}
+```
+
+Run TFA stat analysis
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+# mem hr
+tfa_mem_hr_pd = getPdDist(pdPath = perm_path, distName = "mem_hr_TFAperm_3000_8edg.csv")
+tfa_mem_hr_sts = fullStatTFA(permDist = tfa_mem_hr_pd, inDat = RetDat_v3_res, REF = T, erTask = "M", dv = "hr", resid = T, EDG = 8, 
+                              lat=0, xscl = 4, yscl = 8, clus_p=.07)
+# print stats
+tfa_mem_hr_sts$TFA_mpc
+mean(tfa_mem_hr_sts$zp_test[[1]][which(tfa_mem_hr_sts$TFA_mpc$ClusMap == 1)])
+max(tfa_mem_hr_sts$zp_test[[1]][which(tfa_mem_hr_sts$TFA_mpc$ClusMap == 1)])
+mean(tfa_mem_hr_sts$EffPow[which(tfa_mem_hr_sts$TFA_mpc$ClusMap == 1)])
+max(tfa_mem_hr_sts$EffPow[which(tfa_mem_hr_sts$TFA_mpc$ClusMap == 1)])
+# make a nicer plot
+ar = 200; ln_size = 1; titSiz = 18; axLabSiz = 13; axTicSize = 1; axLinSize = 1; asTxtSize = 10
+titName="Memory Rhythms Across SOAs"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)";
+fc = "plain"; lgndU = 1; lgnd_pz = "right"; lgndTit = "DV"; lgndTxt = 10; lgTitsz = 12
+tfa_mem_hr_sts$TFA_mpc$clus_Rastplot +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Power (Z)") + ggtitle(titName) + theme(legend.position=lgnd_pz)
+```
+
+For other DV's
+
+```{r}
+# mem rt
+tfa_mem_rt_pd = getPdDist(pdPath = perm_path, distName = "mem_rt_TFAperm_3000_8edg.csv")
+tfa_mem_rt_sts = fullStatTFA(permDist = tfa_mem_rt_pd, inDat = RetDat_v3_res, REF = T, erTask = "M", dv = "rt", resid = T, EDG = 8, xscl = 4, yscl = 8)
+# mem ies
+tfa_mem_ies_pd = getPdDist(pdPath = perm_path, distName = "mem_ies_TFAperm_3000_8edg.csv")
+tfa_mem_ies_sts = fullStatTFA(permDist = tfa_mem_ies_pd, inDat = RetDat_v3_res, REF = T, erTask = "M", dv = "ies", resid = T, EDG = 8, xscl = 4, yscl = 8)
+# print output
+tfa_mem_rt_sts; tfa_mem_ies_sts
+```
+
+### For previous versions
+
+For v1 
+
+```{r}
+perm_path = paste(master_path,"Distributions/pilot_1/",sep="")
+files = list.files(perm_path)
+# for acc
+if (any(files == "mem_hr_TFAperm_3000_8edg.csv") == FALSE){
+  mem_hr_TFAperm = TFA_perm_nd(RetDat_v1, nPerm = 3000, erTask = "M", dv = "hr", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_hr_TFAperm$meltDat,paste(perm_path,"mem_hr_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for HR already exist, and do not need to be regenerated"))}
+# for rt
+if (any(files == "mem_rt_TFAperm_3000_8edg.csv") == FALSE){
+  mem_rt_TFAperm = TFA_perm_nd(RetDat_v1, nPerm = 3000, erTask = "M", dv = "rt", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_rt_TFAperm$meltDat,paste(perm_path,"mem_rt_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for RT already exist, and do not need to be regenerated"))}
+# for ies
+if (any(files == "mem_ies_TFAperm_3000_8edg.csv") == FALSE){
+  mem_ies_TFAperm = TFA_perm_nd(RetDat_v1, nPerm = 3000, erTask = "M", dv = "ies", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_ies_TFAperm$meltDat,paste(perm_path,"mem_ies_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for IES already exist, and do not need to be regenerated"))}
+```
+
+Run TFA stat analysis
+
+```{r}
+perm_path = paste(master_path,"Distributions/pilot_1/",sep="")
+# mem hr
+tfa_mem_hr_pd_v1 = getPdDist(pdPath = perm_path, distName = "mem_hr_TFAperm_3000_8edg.csv")
+tfa_mem_hr_sts_v1 = fullStatTFA(tfa_mem_hr_pd_v1, RetDat_v1, REF = T, erTask = "M", dv = "hr", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+# mem rt
+tfa_mem_rt_pd_v1 = getPdDist(pdPath = perm_path, distName = "mem_rt_TFAperm_3000_8edg.csv")
+tfa_mem_rt_sts_v1 = fullStatTFA(tfa_mem_rt_pd_v1, RetDat_v1, REF = T, erTask = "M", dv = "rt", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+# mem ies
+tfa_mem_ies_pd_v1 = getPdDist(pdPath = perm_path, distName = "mem_ies_TFAperm_3000_8edg.csv")
+tfa_mem_ies_sts_v1 = fullStatTFA(tfa_mem_ies_pd_v1, RetDat_v1, REF = T, erTask = "M", dv = "ies", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+tfa_mem_hr_sts_v1; tfa_mem_rt_sts_v1; tfa_mem_ies_sts_v1
+```
+
+For v2 
+
+```{r}
+perm_path = paste(master_path,"Distributions/pilot_2/",sep="")
+files = list.files(perm_path)
+# for acc
+if (any(files == "mem_hr_TFAperm_3000_8edg.csv") == FALSE){
+  mem_hr_TFAperm = TFA_perm_nd(RetDat_v2, nPerm = 3000, erTask = "M", dv = "hr", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_hr_TFAperm$meltDat,paste(perm_path,"mem_hr_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for HR already exist, and do not need to be regenerated"))}
+# for rt
+if (any(files == "mem_rt_TFAperm_3000_8edg.csv") == FALSE){
+  mem_rt_TFAperm = TFA_perm_nd(RetDat_v2, nPerm = 3000, erTask = "M", dv = "rt", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_rt_TFAperm$meltDat,paste(perm_path,"mem_rt_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for RT already exist, and do not need to be regenerated"))}
+# for ies
+if (any(files == "mem_ies_TFAperm_3000_8edg.csv") == FALSE){
+  mem_ies_TFAperm = TFA_perm_nd(RetDat_v2, nPerm = 3000, erTask = "M", dv = "ies", lat = 100, resid = F, NArm = T, seed = 18,
+                        REF = T, EDG = 8, FQ_lb = 3, FQ_ub = 7, spc = "linear")
+  write_csv(mem_ies_TFAperm$meltDat,paste(perm_path,"mem_ies_TFAperm_3000_8edg.csv",sep=""))
+} else {print(paste("Permutation distributions for IES already exist, and do not need to be regenerated"))}
+```
+
+Run TFA stat analysis
+
+```{r}
+perm_path = "~/Documents/GitHub/MBO/Distributions/v2/"
+# mem hr
+tfa_mem_hr_pd_v2 = getPdDist(pdPath = perm_path, distName = "mem_hr_TFAperm_3000_8edg.csv")
+tfa_mem_hr_sts_v2 = fullStatTFA(tfa_mem_hr_pd_v2, RetDat_v2, REF = T, erTask = "M", dv = "hr", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+# mem rt
+tfa_mem_rt_pd_v2 = getPdDist(pdPath = perm_path, distName = "mem_rt_TFAperm_3000_8edg.csv")
+tfa_mem_rt_sts_v2 = fullStatTFA(tfa_mem_rt_pd_v2, RetDat_v2, REF = T, erTask = "M", dv = "rt", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+# mem ies
+tfa_mem_ies_pd_v2 = getPdDist(pdPath = perm_path, distName = "mem_ies_TFAperm_3000_8edg.csv")
+tfa_mem_ies_sts_v2 = fullStatTFA(tfa_mem_ies_pd_v2, RetDat_v2, REF = T, erTask = "M", dv = "ies", lat = 100, resid = F, EDG = 8, xscl = 4, yscl = 8, clus_p=.1)
+tfa_mem_hr_sts_v2; tfa_mem_rt_sts_v2; tfa_mem_ies_sts_v2
+```
+
+
+### Supplemental plot for other versions TFA
+
+```{r}
+# plot 1
+tfa_mem_rt_sts_v1; tfa_mem_ies_sts_v1
+tfa_mem_rt_sts_v2
+```
+
+```{r}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+ar = 25; ln_size = 1; titSiz = 10; axLabSiz = 8; axTicSize = .6; axLinSize = .6; asTxtSize = 6; dt_sz = .6
+lgndTxt = 6; lgTitsz = 8; lgndU = .5; fc = "bold"; lgnd_pz ="bottom"  #c(1,.5)
+# ---------------------- plot 1 ----------------------------
+titName="Memory RT TFA P1"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)"
+p1 = tfa_mem_rt_sts_v1$TFA_mpc$clus_Rastplot +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (Power)") + ggtitle(titName) + theme(legend.position=lgnd_pz) + coord_fixed(ratio = ar)
+# ---------------------- Plot 2 -----------------------------
+titName="Memory IES TFA P1"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)"
+p2 = tfa_mem_ies_sts_v1$TFA_mpc$clus_Rastplot +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (Power)") + ggtitle(titName) + theme(legend.position=lgnd_pz) + coord_fixed(ratio = ar)
+# ---------------------- plot 3 ----------------------------
+titName="Memory RT TFA P2"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)"
+p3 = tfa_mem_rt_sts_v2$TFA_mpc$clus_Rastplot +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (Power)") + ggtitle(titName) + theme(legend.position=lgnd_pz) + coord_fixed(ratio = ar)
+# ---------------------- Combine Plots -----------------------------
+perm_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,2,3)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,p3,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s3 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b", "c"), size = 13,
+                  x = c(0, .33, .66), y = c(.83, .83, .83)) # Add labels
+fig_s3
+ggsave(fig_s3, file = paste(plot_path,"fig_s3.pdf",sep=""))
+``` 
+
+## Stationary Phase
+
+Phase consistency
+
+```{r}
+# Memroy phase
+fq = 7; nbins = 10
+memHr_phase = grpPhaseCon(inDat = RetDat_v3_res, erTask = "M", dv = "hr", fq = fq, color = "maroon3", resid = T,title = "HR Phase", nbins = nbins, titSiz = 25)
+memRt_phase = grpPhaseCon(inDat = RetDat_v3_res, erTask = "M", dv = "rt", fq = fq, color = "maroon4", resid = T,title = "RT Phase", nbins = nbins, titSiz = 25)
+memIes_phase = grpPhaseCon(inDat = RetDat_v3_res, erTask = "M", dv = "ies", fq = fq, color = "maroon1", resid = T,title = "IES Phase", nbins = nbins, titSiz = 25)
+memHr_phase; memRt_phase; memIes_phase
+```
+
+
+## AR1 control analysis
+
+```{r}
+AR1_path = paste(master_path,"Data/AR1_control/",sep="")
+AR1_dat = read_csv(paste(AR1_path, "adapted_brooksire_2024_TB2.csv", sep=""))
+AR1_dat$p_raw <- format(AR1_dat$p_raw, scientific=F); AR1_dat$p_corr <- format(AR1_dat$p_corr, scientific=T)
+# AR1_dat$dv = ifelse(AR1_dat$dv == ".D","IES",
+#                     ifelse(AR1_dat$dv == "HR","HR",
+#                            ifelse(AR1_dat$dv == "RT","RT",NA)))
+AR1_dat
+```
+
+```{r}
+# make plot
+AR1_dat_plt = AR1_dat %>% select(freq, power, surragate_95, dv); colnames(AR1_dat_plt) <- c("freq","vals","crit","dv")
+obs_d = AR1_dat_plt %>% select(freq, vals, dv) %>% mutate(cond = "obs")
+crit_d = AR1_dat_plt %>% select(freq, crit, dv) %>% mutate(cond = "crit") %>% rename(vals = crit)
+AR1_dat_plt = rbind(obs_d, crit_d)
+lgnd_pz = c(1,.5)
+FFT_plot_mlt(AR1_dat_plt, ylinRg = c(0,1.4),ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("maroon3","maroon1","maroon4"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="AR1 Control Analysis (Memory FFT)", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "bold", lgndU = lgndU, lgnd_pz = lgnd_pz, lgndTit = "DV", lgndTxt = lgndTxt, lgTitsz = lgTitsz, y_scl = .01) + 
+  annotate("segment", x = 5.5, y = 1.4, xend = 9.5, yend = 1.4, size = ln_size, color = "maroon3") +
+  annotate("segment", x = 4.5, y = 1.2, xend = 9.5, yend = 1.2, size = ln_size, color = "maroon4") + 
+  annotate("segment", x = 4.5, y = 1.3, xend = 10.5, yend = 1.3, size = ln_size, color = "maroon1") +
+  annotate("segment", x = 3, y = 1.3, xend = 3.5, yend = 1.3, size = ln_size, color = "maroon1") 
+```
+
+
+## Make chapter 1 figure
+
+Set ggplot defaults for nature
+
+```{r}
+theme_set(
+  theme_classic() + 
+    theme(
+      # Legend spacing & margins
+      legend.spacing = unit(2, "pt"),
+      legend.margin = margin(0, 0, 0, 0),
+      # Plot margins
+      plot.margin = margin(4, 4, 4, 4),
+      # Title offsets
+      plot.title = element_text(margin = margin(b = 2)),
+  )
+)
+# # things to copy and paste 
+# titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"
+# # within theme
+# plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2))
+# plot.margin = margin(mp, mp, mp, mp)
+# legend.spacing = unit(1, "pt"),
+# legend.margin = margin(0, 0, 0, 0)
+# scale_x_continuous(expand = expansion(mult = 0, add = 0))
+# ggsave(paste(plot_path,"Figure_2/fig_2_b.pdf",sep=""), p2,width = 55, height = 30, units = "mm")
+```
+
+make plot
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_2", sep=""))) {
+  dir.create(paste(plot_path, "Fig_2", sep=""))
+}
+# common features across plots
+titSiz = 10; lgndU = .3; fc = "plain"; lgndTxt = 6; lgTitsz = 7; axLabSiz = 8; axTicSize = .8; axLinSize = .8; asTxtSize = 7; ln_size = 1
+scf = .8; titSiz = titSiz*scf; lgndU = lgndU*scf; lgndTxt = lgndTxt*scf; lgTitsz = lgTitsz*scf
+axLabSiz = axLabSiz*scf; axTicSize = axTicSize*scf; axLinSize = axLinSize*scf; asTxtSize = asTxtSize*scf; ln_size = ln_size*scf
+# --------------------------- Panel 1 --------------------------------
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"
+ar = 4000; yrng = c(.59,.71)
+p1 = ggplot(plt_df_memhr, aes(x=SOAcorr_ct,y=mn, color=Condition)) + # 
+  geom_line(aes(color=Condition), size=ln_size) + scale_x_continuous(n.breaks = 8) +
+  geom_ribbon(aes(ymin=lb,ymax=ub, fill=Condition), alpha=0.3, color = NA) + theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), 
+      axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), 
+      legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle("Memory Accuracy by SOA") + 
+  #coord_fixed(ratio = ar) +
+  #xlim(200, 1100) +
+  scale_fill_manual(values=c("maroon3")) + 
+  scale_color_manual(values=c("maroon3")) + 
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) # remove gap in front of x-axis
+ggsave(paste(plot_path,"Figure_2/fig_2_a.pdf",sep=""), p1,width = 55, height = 30, units = "mm")
+# --------------------------- Panel 2 --------------------------------
+lgnd_pz = "right"
+p2 = FFT_plot_mlt(memFFT, ylinRg = c(8.5,14), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, 
+                              axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("maroon3","maroon1","maroon4"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Memory Rhythms (FFT)", yAxLab="Spectral Power (a.u.)", xAxLab="Frequency (Hz)",
+                              fc = "plain", lgndU = lgndU, lgnd_pz = lgnd_pz, lgndTit = "", lgndTxt = lgndTxt, lgTitsz = lgTitsz) + 
+  theme(plot.margin = margin(mp, mp, mp, mp),  # modify margin around exterior of the plot
+        legend.spacing = unit(1, "pt"),
+        legend.margin = margin(0, 0, 0, 0)) +  # remove margins on the legend
+  annotate("segment", x = 6.5, y = 13.5, xend = 7.5, yend = 13.5, size = ln_size, color = "maroon3") +
+  annotate("segment", x = 6.5, y = 13.8, xend = 7.5, yend = 13.8, size = ln_size, color = "maroon1") 
+ggsave(paste(plot_path,"Figure_2/fig_2_b.pdf",sep=""), p2,width = 55, height = 30, units = "mm")
+# --------------------------- Panel 3 --------------------------------
+ar = 20; lgnd_pz = "right"; NBX = seq(450,850,50); NBY = seq(3,15,2)
+titName="Memory HR Power by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)"; 
+p3 = tfa_mem_hr_sts$TFA_mpc$clus_Rastplot + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.key.size = unit(lgndU,'cm'),
+      legend.text=element_text(size=axLabSiz),legend.title=element_text(size=axLabSiz),
+      legend.margin = margin(0, 0, 0, 0)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (Pwr)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  theme(plot.margin = margin(mp, mp, mp, mp) ) +
+  scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0.1)) + # remove gap in front of x-axis
+  scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0.01))   # remove gap in front of x-axis
+ggsave(paste(plot_path,"Figure_2/fig_2_c.pdf",sep=""), p3,width = 55, height = 30, units = "mm")
+ # --------------------------- Panel 4 --------------------------------
+ar = 20; lgnd_pz = "right"
+titName="Memory IES Power by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (ms)"; 
+p4 = tfa_mem_ies_sts$TFA_mpc$clus_Rastplot +  
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=axLabSiz),
+      legend.title=element_text(size=axLabSiz), legend.margin = margin(0, 0, 0, 0)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (Pwr)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  # nature formatting adds
+  theme(plot.margin = margin(mp, mp, mp, mp) ) +
+  scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0.1)) + 
+  scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0.01)) 
+ggsave(paste(plot_path,"Figure_2/fig_2_d.pdf",sep=""), p4,width = 55, height = 30, units = "mm")
+# --------------------------- Panel 5 --------------------------------
+lgnd_pz = "right"
+p5 = FFT_plot_mlt(AR1_dat_plt, ylinRg = c(0,1.4), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, 
+                              axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("maroon3","maroon1","maroon4"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="AR1 Surrogate (FFT)", yAxLab="Spectral Power (a.u.)", xAxLab="Frequency (Hz)",
+                              fc = "plain", lgndU = lgndU, lgnd_pz = lgnd_pz, lgndTit = "", lgndTxt = lgndTxt,
+                  lgTitsz = lgTitsz, y_scl = .01) + 
+  annotate("segment", x = 5.5, y = 1.4, xend = 9.5, yend = 1.4, size = ln_size, color = "maroon3") +
+  annotate("segment", x = 4.5, y = 1.2, xend = 9.5, yend = 1.2, size = ln_size, color = "maroon4") + 
+  annotate("segment", x = 4.5, y = 1.3, xend = 10.5, yend = 1.3, size = ln_size, color = "maroon1") +
+  annotate("segment", x = 3, y = 1.3, xend = 3.5, yend = 1.3, size = ln_size, color = "maroon1") +
+  # nature formatting adds
+  theme(plot.margin = margin(mp, mp, mp, mp),
+        legend.spacing = unit(1, "pt"),
+        legend.margin = margin(0, 0, 0, 0)) #+
+  #scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0)) + 
+  #scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0)) 
+ggsave(paste(plot_path,"Figure_2/fig_2_e.pdf",sep=""), p5,width = 55, height = 30, units = "mm")
+# --------------------------- Panel 6 --------------------------------
+p6 = phaseDiff_anaPlt_2(memHr_phase[[1]]$phase, color1="maroon3", color2="grey",colorV="black",
+                              condName = "SwSt",binSz = 10, rnd = 4,
+                              ln_size = ln_size, titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, 
+                              axLinSize = 0, asTxtSize = asTxtSize,
+                              title1="",title2="HR Phase", fc = fc, anX = memHr_phase$sumDat$circ_mn, 
+                              anY = 1, anLab = "~", anSz=3, anAn=70)[[2]] + 
+  theme(
+        plot.margin = margin(2, 2, 2, 2),
+        panel.grid.major = element_line(size = 0.01),
+        panel.grid.minor = element_line(size = 0.01),
+        axis.text.x = element_text(margin = margin(t = 10)),
+        axis.text.y = element_text(margin = margin(r = 5))
+        )
+p6
+ggsave(paste(plot_path,"Figure_2/fig_2_f.pdf",sep=""), p6,width = 30, height = 30, units = "mm")
+# --------------------------- Panel 7 --------------------------------
+p7 = phaseDiff_anaPlt_2(memRt_phase[[1]]$phase, color1="maroon4", color2="grey",
+                        colorV="black",condName = "SwSt",binSz = 10, rnd = 4,
+                        ln_size = ln_size, titSiz = titSiz, axLabSiz = axLabSiz, 
+                        axTicSize = axTicSize, axLinSize = 0, asTxtSize = asTxtSize,
+                        title1="",title2="RT Phase", fc = fc, anX = memRt_phase$sumDat$circ_mn, 
+                        anY = 1, anLab = "~", anSz=3, anAn=135)[[2]] + 
+  theme(
+        plot.margin = margin(2, 2, 2, 2),
+        panel.grid.major = element_line(size = 0.01),
+        panel.grid.minor = element_line(size = 0.01),
+        axis.text.x = element_text(margin = margin(t = 10)),
+        axis.text.y = element_text(margin = margin(r = 5))
+        )
+ggsave(paste(plot_path,"Figure_2/fig_2_g.pdf",sep=""), p7,width = 30, height = 30, units = "mm")
+# --------------------------- Panel 8 --------------------------------
+p8 = phaseDiff_anaPlt_2(memIes_phase[[1]]$phase, color1="maroon1", color2="grey",
+                        colorV="black",condName = "SwSt",binSz = 10, rnd = 4,
+                        ln_size = ln_size, titSiz = titSiz, axLabSiz = axLabSiz,
+                        axTicSize = axTicSize, axLinSize = 0, asTxtSize = asTxtSize,
+                        title1="",title2="IES Phase", fc = fc, anX = memIes_phase$sumDat$circ_mn, 
+                        anY = 1, anLab = "**", anSz=3, anAn=95)[[2]] + 
+  theme(
+        plot.margin = margin(2, 2, 2, 2),
+        panel.grid.major = element_line(size = 0.01),
+        panel.grid.minor = element_line(size = 0.01),
+        axis.text.x = element_text(margin = margin(t = 10)),
+        axis.text.y = element_text(margin = margin(r = 5))
+        )
+ggsave(paste(plot_path,"Figure_2/fig_2_h.pdf",sep=""), p8,width = 30, height = 30, units = "mm")
+```
+
+## Extended data
+
+### E1: Individual differences in memory rhythm peak frequency (HR, RT, IES)
+
+Get histogram of the individualized peak frequencies in theta range across individuals
+
+```{r}
+hr_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10))
+rt_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "rt", resid = T, fq_rng = c(3:10))
+ies_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "ies", resid = T, fq_rng = c(3:10))
+```
+
+Look at power at common peak frequencies
+
+```{r}
+# check hr power at 7hz and second most common pf
+mean(filter(hr_fft_pf, hz == 7)$pwr); sd(filter(hr_fft_pf, hz == 7)$pwr)
+mean(filter(hr_fft_pf, hz == 3)$pwr); sd(filter(hr_fft_pf, hz == 3)$pwr)
+# check ies power at 7hz and second most common pf
+mean(filter(ies_fft_pf, hz == 7)$pwr); sd(filter(ies_fft_pf, hz == 7)$pwr)
+mean(filter(ies_fft_pf, hz == 10)$pwr); sd(filter(ies_fft_pf, hz == 10)$pwr)
+# add subject number
+hr_fft_pf$sub_num = 1:nrow(hr_fft_pf)
+```
+
+Get two example time-series (one low theta, one high theta)
+
+```{r}
+examp_sub_high_o = hr_fft_pf %>% filter(hz == 10) %>% arrange(desc(pwr))
+examp_sub_high = examp_sub_high_o[1,]$subject; examp_sub_high_sn = examp_sub_high_o[1,]$sub_num
+examp_sub_avg_o = hr_fft_pf %>% filter(hz == 7) %>% arrange(desc(pwr))
+examp_sub_avg = examp_sub_avg_o[1,]$subject; examp_sub_avg_sn = examp_sub_avg_o[1,]$sub_num
+examp_sub_low_o = hr_fft_pf %>% filter(hz == 3) %>% arrange(desc(pwr))
+examp_sub_low = examp_sub_low_o[1,]$subject; examp_sub_low_sn = examp_sub_low_o[1,]$sub_num
+```
+
+get ts and plot for each
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e1", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e1", sep=""))
+}
+# # things to copy and paste 
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; h = 30
+# get all SOA averages
+AvgSOA_memhr = soa_avg(RetDat_v3_res, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = T)[[1]]
+# plot ts for low
+yrng = c(.35,.8)
+examp_sub_low_ts = filter(AvgSOA_memhr, subject == examp_sub_low)
+s1 = ggplot(examp_sub_low_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(breaks = seq(200,1100,200), expand = expansion(mult = 0, add = 0)) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Memory Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Memory Timecourse (S = ",examp_sub_low_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_a.pdf",sep=""), s1,width = 40, height = h, units = "mm")
+# plot ts for average
+yrng = c(.55,1)
+examp_sub_avg_ts = filter(AvgSOA_memhr, subject == examp_sub_avg)
+s2 = ggplot(examp_sub_avg_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(breaks = seq(200,1100,200), expand = expansion(mult = 0, add = 0)) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Memory Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Memory Timecourse (S = ",examp_sub_avg_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_b.pdf",sep=""), s2,width = 40, height = h, units = "mm")
+# plot ts for high
+yrng = c(.55,1)
+examp_sub_high_ts = filter(AvgSOA_memhr, subject == examp_sub_high)
+s3 = ggplot(examp_sub_high_ts, aes(x=SOAcorr_ct,y=hr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(breaks = seq(200,1100,200), expand = expansion(mult = 0, add = 0)) +
+  theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Memory Hit Rate", x = "Encoding SOA (ms)") + ggtitle(paste("Memory Timecourse (S = ",examp_sub_high_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_c.pdf",sep=""), s3,width = 40, height = h, units = "mm")
+# low theta 
+spec_dat = getSpec_pmp(examp_sub_low_ts$hr, dtr = T, hw = T, output = "power", nSamp = 30, sf = 30, fq_wind = c(3,14))
+spec_dat_pldf = data.frame(hz = spec_dat[[2]], pwr=spec_dat[[1]])
+s4 = ggplot(spec_dat_pldf, aes(x=hz,y=pwr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + #ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Power (a.u.)", x = "Frequency (hz)") + ggtitle(paste("Memory FFT (S = ",examp_sub_low_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_d.pdf",sep=""), s4,width = 40, height = h, units = "mm")
+# average 
+spec_dat = getSpec_pmp(examp_sub_avg_ts$hr, dtr = T, hw = T, output = "power", nSamp = 30, sf = 30, fq_wind = c(3,14))
+spec_dat_pldf = data.frame(hz = spec_dat[[2]], pwr=spec_dat[[1]])
+s5 = ggplot(spec_dat_pldf, aes(x=hz,y=pwr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + #ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Power (a.u.)", x = "Frequency (hz)") + ggtitle(paste("Memory FFT (S = ",examp_sub_avg_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_e.pdf",sep=""), s5,width = 40, height = h, units = "mm")
+# high 
+spec_dat = getSpec_pmp(examp_sub_high_ts$hr, dtr = T, hw = T, output = "power", nSamp = 30, sf = 30, fq_wind = c(3,14))
+spec_dat_pldf = data.frame(hz = spec_dat[[2]], pwr=spec_dat[[1]])
+s6 = ggplot(spec_dat_pldf, aes(x=hz,y=pwr)) + # 
+  geom_line(color = "maroon3", size=ln_size) + scale_x_continuous(n.breaks = 14) +
+  theme_classic() + #ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), legend.position = c("none"),
+      plot.margin = margin(mp, mp, mp, mp)) +  # , color = lnColor
+    labs(y= "Power (a.u.)", x = "Frequency (hz)") + ggtitle(paste("Memory FFT (S = ",examp_sub_high_sn,")",sep="")) 
+ggsave(paste(plot_path,"Fig_e1/fig_e1_f.pdf",sep=""), s6,width = 40, height = h, units = "mm")
+
+```
+
+
+
+### E2: ISPC analysis
+
+Run analyses
+
+```{r}
+# hr
+ISPC_perm_mhr = ISPC_permTest(inDat = RetDat_v3_res, Nperm = 3000, erTask = "M", dv = "hr", resid = T, refl = T, edge = 0)
+ISPC_memhr = fullStatISPC(ISPC_perm_mhr, RetDat_v3_res, refl = T, erTask = "M", dv = "hr", resid = T, edge = 0, xscl = 8, yscl = 8, clus_p=.05)
+ISPC_memhr$TFA_mpc$ClusVals
+# rt
+ISPC_perm_mrt = ISPC_permTest(inDat = RetDat_v3_res, Nperm = 3000, erTask = "M", dv = "rt", resid = T, refl = T, edge = 0)
+ISPC_mrt = fullStatISPC(ISPC_perm_mrt, RetDat_v3_res, refl = T, erTask = "M", dv = "rt", resid = T, edge = 0, xscl = 8, yscl = 8, clus_p=.05)
+ISPC_mrt$TFA_mpc$ClusVals
+# ies
+ISPC_perm_mies = ISPC_permTest(inDat = RetDat_v3_res, Nperm = 3000, erTask = "M", dv = "ies", resid = T, refl = T, edge = 0)
+ISPC_mies = fullStatISPC(ISPC_perm_mies, RetDat_v3_res, refl = T, erTask = "M", dv = "ies", resid = T, edge = 0, xscl = 8, yscl = 8, clus_p=.05)
+ISPC_mies$TFA_mpc$ClusVals
+```
+
+Make plots
+
+```{r}
+# params
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e2", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e2", sep=""))
+}
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgTitsz = .5; lgndU = .3
+lgnd_pz = "right"; NBX = seq(200,1100,200); NBY = seq(3,15,2); w = 40; h = 40 
+# hr
+#ar = 200; ln_size = 1; titSiz = 18; axLabSiz = 13; axTicSize = 1; axLinSize = 1; asTxtSize = 10
+titName="Memory HR Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)";
+fc = "plain";  lgnd_pz = "bottom"; lgndTit = "DV"; #lgndTxt = 10; 
+s1 = ISPC_memhr$TFA_mpc$clus_Rastplot +
+   theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      legend.text=element_text(size=axLabSiz), legend.title=element_text(size=axLabSiz), legend.key.size = unit(lgndU, 'cm'), 
+      # nhb added
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.margin = margin(0, 0, 0, 0),
+      plot.margin = margin(mp, mp, mp, mp)) +
+      scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0.1)) + # remove gap in front of x-axis
+      scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0.01)) +  # remove gap in front of x-axis
+      # nhb added
+    labs(y= yAxLab, x = xAxLab, fill = "ISPC (Z)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  scale_fill_gradient(low="green", high="red", na.value = "grey88", space ="Lab", breaks = seq(2, 4, by = 1))
+ggsave(paste(plot_path,"Fig_e2/fig_e2_a.pdf",sep=""), s1,width = w, height = h, units = "mm")
+# rt
+titName="Memory RT Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)";
+s2 = ISPC_mrt$TFA_mpc$clus_Rastplot +
+   theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      legend.text=element_text(size=axLabSiz), legend.title=element_text(size=axLabSiz), legend.key.size = unit(lgndU, 'cm'), 
+      # nhb added
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.margin = margin(0, 0, 0, 0),
+      plot.margin = margin(mp, mp, mp, mp)) +
+      scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0.1)) + # remove gap in front of x-axis
+      scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0.01)) +  # remove gap in front of x-axis
+      # nhb added
+    labs(y= yAxLab, x = xAxLab, fill = "ISPC (Z)") + ggtitle(titName) + theme(legend.position=lgnd_pz)
+ggsave(paste(plot_path,"Fig_e2/fig_e2_b.pdf",sep=""), s2,width = w, height = h, units = "mm")
+# make nicer plot
+titName="Memory IES Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)";
+s3 = ISPC_mies$TFA_mpc$clus_Rastplot +
+   theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      legend.text=element_text(size=axLabSiz), legend.title=element_text(size=axLabSiz), legend.key.size = unit(lgndU, 'cm'), 
+      # nhb added
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+      legend.margin = margin(0, 0, 0, 0),
+      plot.margin = margin(mp, mp, mp, mp)) +
+      scale_x_continuous(breaks = NBX, expand = expansion(mult = 0, add = 0.1)) + # remove gap in front of x-axis
+      scale_y_continuous(breaks = NBY, expand = expansion(mult = 0, add = 0.01)) +  # remove gap in front of x-axis
+      # nhb added
+    labs(y= yAxLab, x = xAxLab, fill = "ISPC (Z)") + ggtitle(titName) + theme(legend.position=lgnd_pz)
+ggsave(paste(plot_path,"Fig_e2/fig_e2_c.pdf",sep=""), s3,width = w, height = h, units = "mm")
+```
+
+
+Plots
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+# common features across plots
+titSiz = 10; lgndU = .4; fc = "bold"; lgndTxt = 6; lgTitsz = 7; axLabSiz = 8; axTicSize = .5; axLinSize = .5; asTxtSize = 6
+ar = 48; lgnd_pz = "bottom"
+# --------------------------- Panel 1 --------------------------------
+titName="Memory HR Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)"
+p1 = ISPC_memhr$TFA_mpc$clus_Rastplot + scale_x_continuous(n.breaks = 8) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (ISPC)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  coord_fixed(ratio = ar)
+# --------------------------- Panel 2 --------------------------------
+titName="Memory RT Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)"
+p2 = ISPC_mrt$TFA_mpc$clus_Rastplot + scale_x_continuous(n.breaks = 8) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (ISPC)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  coord_fixed(ratio = ar)
+# --------------------------- Panel 3 --------------------------------
+titName="Memory IES Phase by SOA"; yAxLab="Frequency (Hz)"; xAxLab="Encoding SOA (s)"
+p3 = ISPC_mies$TFA_mpc$clus_Rastplot + scale_x_continuous(n.breaks = 8) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, face=fc, hjust = .5),
+      legend.key.size = unit(lgndU, 'cm'),legend.text=element_text(size=lgndTxt),legend.title=element_text(size=lgTitsz)) +
+    labs(y= yAxLab, x = xAxLab, fill = "Z (ISPC)") + ggtitle(titName) + theme(legend.position=lgnd_pz) +
+  coord_fixed(ratio = ar)
+# --------------------------- Join to make figure --------------------------------
+# set path
+layMat = as.matrix(rbind(c(1,2,3)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,p3,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s4 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b", "c"), size = 13,
+                  x = c(0, .33, .66), y = c(.8, .8, .8)) # Add labels
+fig_s4
+ggsave(fig_s4, file = paste(plot_path,"fig_e2.pdf",sep=""))
+
+```
+
+# Ch 2 - Memory rythms not byproducts of attention
+
+
+## visuaize classification compared to memory time-course
+
+For IES
+
+```{r}
+# get mem and class values 
+AvgSOA_mem = soa_avg(RetDat_v3_res, erTask = "M", dv = "ies", resid = T, rand = F, NArm = T, drp = T)[[1]]
+plt_df_mem = AvgSOA_mem %>% group_by(SOAcorr_ct) %>% summarize(mn = mean(ies), se = sd(ies)/sqrt(length(unique(AvgSOA_mem$subject))), ub = mn+se, lb = mn-se) 
+AvgSOA_cls = soa_avg(EncDat_v3_res, erTask = "C", dv = "ies", resid = T, rand = F, NArm = T, drp = T)[[1]]
+plt_df_cls = AvgSOA_cls %>% group_by(SOAcorr_ct) %>% summarize(mn = mean(ies), se = sd(ies)/sqrt(length(unique(AvgSOA_cls$subject))), ub = mn+se, lb = mn-se) 
+plt_df_mem$Condition = "Memory"; plt_df_cls$Condition = "Classification"; pldf_ies = rbind(plt_df_mem,plt_df_cls) #; pldf$mvc <- as.factor(pldf$mvc)
+# make plot
+ar = .5; ln_size = 1.5; titSiz = 20; axLabSiz = 12; axTicSize = 1; axLinSize = 1; asTxtSize = 10; yrng = c(1100,2200)
+ggplot(pldf_ies, aes(x=SOAcorr_ct,y=mn, color=Condition)) + # 
+  geom_line(aes(color=Condition), size=1) + scale_x_continuous(n.breaks = 14) +
+  geom_ribbon(aes(ymin=lb,ymax=ub, fill=Condition), alpha=0.5, color = NA) + theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5), legend.position = c(.9,.15)) +  # , color = lnColor
+    labs(y= "Hit Rate", x = "Encoding SOA (ms)") + ggtitle("Inverse Efficiency by SOA") + 
+  coord_fixed(ratio = ar) +
+  scale_fill_manual(values=c("turquoise3","maroon3")) + 
+  scale_color_manual(values=c("turquoise3","maroon3"))  
+```
+
+## No reliable theta oscillations in classification
+
+Create perm dists and save - if not done previously (takes a while to re-run)
+
+```{r}
+# set perm path
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+# list files
+files = list.files(perm_path)
+# For memory 
+if (any(files == "FFTsur_cls_hr.csv") == FALSE){
+  cls_hr = FFT_permutation_nd(EncDat_v3_res, nPerm = 3000, erTask = "C", dv = "hr", resid = T, seed = 18)   # class hr
+  write_csv(cls_hr,paste(perm_path,"FFTsur_cls_hr.csv",sep=""))
+} else {print(paste("Permutation distributions for HR already exist, and do not need to be regenerated"))}
+if (any(files == "FFTsur_cls_rt.csv") == FALSE){
+  cls_rt = FFT_permutation_nd(EncDat_v3_res, nPerm = 3000, erTask = "C", dv = "rt", resid = T, seed = 18)   # For RT
+  write_csv(cls_rt,paste(perm_path,"FFTsur_cls_rt.csv",sep=""))
+} else {print(paste("Permutation distributions for RT already exist, and do not need to be regenerated"))}
+if (any(files == "FFTsur_cls_ies.csv") == FALSE){
+  cls_ies = FFT_permutation_nd(EncDat_v3_res, nPerm = 3000, erTask = "C", dv = "ies", resid = T, seed = 18) # For IES
+  write_csv(cls_ies,paste(perm_path,"FFTsur_cls_ies.csv",sep=""))
+} else {print(paste("Permutation distributions for IES already exist, and do not need to be regenerated"))}
+
+```
+
+Load previously saved dists and Run FFT analysis
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+cls_hr_v3 = read_csv(paste(perm_path,"FFTsur_cls_hr.csv",sep=""))
+cls_rt_v3 = read_csv(paste(perm_path,"FFTsur_cls_rt.csv",sep=""))
+cls_ies_v3 = read_csv(paste(perm_path,"FFTsur_cls_ies.csv",sep=""))
+# for classification
+clsHr_fft = FFT_analysis(inDat = EncDat_v3_res, inPerm = cls_hr_v3, erTask = "C", dv = "hr", resid = T, zStat = T)
+clsRt_fft = FFT_analysis(inDat = EncDat_v3_res, inPerm = cls_rt_v3, erTask = "C", dv = "rt", resid = T, zStat = T)
+clsIes_fft = FFT_analysis(inDat = EncDat_v3_res, inPerm = cls_ies_v3, erTask = "C", dv = "ies", resid = T, zStat = T)
+clsHr_fft; clsRt_fft; clsIes_fft
+# bind and make joint plot
+clsHr_fft[[2]][[1]]$dv <- "HR"; clsRt_fft[[2]][[1]]$dv <- "RT"; clsIes_fft[[2]][[1]]$dv <- "IES"
+clsFFT = rbind(clsHr_fft[[2]][[1]],clsRt_fft[[2]][[1]],clsIes_fft[[2]][[1]])
+FFT_plot_mlt(clsFFT, ylinRg = c(7,12.5), ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("turquoise3","turquoise4","turquoise1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="FFT Permutation Test", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = "plain", lgndU = 1, lgnd_pz = "right", lgndTit = "DV", lgndTxt = 8, lgTitsz = 8)
+```
+
+### For previous versions
+
+Create perm dists
+
+```{r}
+# for prev vers
+perm_path = paste(master_path,"Distributions/",sep="")
+# For memory 
+for (v in 1:2){
+  #v = 1
+  # specify the version path 
+  perm_path_vers = paste(perm_path,"pilot_",v,"/",sep="")
+  # list files
+  files = list.files(perm_path_vers)
+  if (any(files == "FFTsur_cls_hr.csv") == FALSE){
+    cls_hr = FFT_permutation_nd(get(paste("EncDat_v",v,sep="")), nPerm = 3000, erTask = "C", dv = "hr", lat = 100, resid = F, seed = 18)      # class hr
+    write_csv(cls_hr,paste(perm_path,"v",v,"/FFTsur_cls_hr.csv",sep=""))
+  }
+  if (any(files == "FFTsur_cls_rt.csv") == FALSE){
+    cls_rt = FFT_permutation_nd(get(paste("EncDat_v",v,sep="")), nPerm = 3000, erTask = "C", dv = "rt", lat = 100, resid = F, seed = 18)      # For RT
+    write_csv(cls_rt,paste(perm_path,"v",v,"/FFTsur_cls_rt.csv",sep=""))
+  }
+  if (any(files == "FFTsur_cls_ies.csv") == FALSE){
+    cls_ies = FFT_permutation_nd(get(paste("EncDat_v",v,sep="")), nPerm = 3000, erTask = "C", dv = "ies", lat = 100, resid = F, seed = 18)    # For IES
+    write_csv(cls_ies,paste(perm_path,"v",v,"/FFTsur_cls_ies.csv",sep=""))
+  }
+}
+
+```
+
+Load perm dists and run analysis for V1
+
+```{r}
+# Load dists
+perm_path = paste(master_path,"Distributions/pilot_1/",sep="")
+cls_hr_v1 = read_csv(paste(perm_path,"FFTsur_cls_hr.csv",sep=""))
+cls_rt_v1 = read_csv(paste(perm_path,"FFTsur_cls_rt.csv",sep=""))
+cls_ies_v1 = read_csv(paste(perm_path,"FFTsur_cls_ies.csv",sep=""))
+# for classification
+clsHr_fft_v1 = FFT_analysis(inDat = EncDat_v1, inPerm = cls_hr_v1, erTask = "C", dv = "hr", lat = 100, resid = F, zStat = T)
+clsRt_fft_v1 = FFT_analysis(inDat = EncDat_v1, inPerm = cls_rt_v1, erTask = "C", dv = "rt", lat = 100, resid = F, zStat = T)
+clsIes_fft_v1 = FFT_analysis(inDat = EncDat_v1, inPerm = cls_ies_v1, erTask = "C", dv = "ies", lat = 100, resid = F, zStat = T)
+clsHr_fft_v1; clsRt_fft_v1; clsIes_fft_v1
+```
+
+Load perm dists and run analysis for V2
+
+```{r}
+# Load dists
+perm_path = paste(master_path,"Distributions/pilot_2/",sep="")
+cls_hr_v2 = read_csv(paste(perm_path,"FFTsur_cls_hr.csv",sep=""))
+cls_rt_v2 = read_csv(paste(perm_path,"FFTsur_cls_rt.csv",sep=""))
+cls_ies_v2 = read_csv(paste(perm_path,"FFTsur_cls_ies.csv",sep=""))
+# for classification
+clsHr_fft_v2 = FFT_analysis(inDat = EncDat_v2, inPerm = cls_hr_v2, erTask = "C", dv = "hr", lat = 100, resid = F, zStat = T)
+clsRt_fft_v2 = FFT_analysis(inDat = EncDat_v2, inPerm = cls_rt_v2, erTask = "C", dv = "rt", lat = 100, resid = F, zStat = T)
+clsIes_fft_v2 = FFT_analysis(inDat = EncDat_v2, inPerm = cls_ies_v2, erTask = "C", dv = "ies", lat = 100, resid = F, zStat = T)
+clsHr_fft_v2; clsRt_fft_v2; clsIes_fft_v2
+```
+
+```{r}
+mean(c(2.838,3.786))
+mean(c(0.429,0.551))	
+```
+
+
+### Make supporting plot
+
+Bind data frames
+
+```{r}
+# bind values for v1
+clsHr_fft_v1[[2]][[1]]$dv <- "HR"; clsRt_fft_v1[[2]][[1]]$dv <- "RT"; clsIes_fft_v1[[2]][[1]]$dv <- "IES"
+clsFFT_v1 = rbind(clsHr_fft_v1[[2]][[1]],clsRt_fft_v1[[2]][[1]],clsIes_fft_v1[[2]][[1]])
+# bind values for v2
+clsHr_fft_v2[[2]][[1]]$dv <- "HR"; clsRt_fft_v2[[2]][[1]]$dv <- "RT"; clsIes_fft_v2[[2]][[1]]$dv <- "IES"
+clsFFT_v2 = rbind(clsHr_fft_v2[[2]][[1]],clsRt_fft_v2[[2]][[1]],clsIes_fft_v2[[2]][[1]])
+```
+
+Make joint plot
+
+```{r}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+ar = .9; ln_size = 1; titSiz = 12; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8; dt_sz = .6
+lgndTxt = 6; lgTitsz = 8; lgndU = .4; fc = "bold"; lgnd_pz = "right" #c(1,.5)
+# ---------------------- plot 1 ----------------------------
+p1 = FFT_plot_mlt(clsFFT_v1, ylinRg = c(7,16.2), ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              colors = c("turquoise3","turquoise4","turquoise1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Classification FFT Pilot 1", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = fc, lgndU = lgndU, lgnd_pz = lgnd_pz, lgndTit = "DV", lgndTxt = lgndTxt, lgTitsz = lgTitsz)
+# ---------------------- Plot 2 -----------------------------
+p2 = FFT_plot_mlt(clsFFT_v2, ylinRg = c(7,16.2), ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("turquoise3","turquoise4","turquoise1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Classification FFT Pilot 2", yAxLab="Spectral Power (AU)", xAxLab="Frequency (Hz)",
+                              fc = fc, lgndU = lgndU, lgnd_pz = lgnd_pz, lgndTit = "DV", lgndTxt = lgndTxt, lgTitsz = lgTitsz) +
+                annotate("segment", x = 11.5, y = 16, xend = 13.5, yend = 16, size = ln_size, color = "turquoise3")
+# ---------------------- Combine Plots -----------------------------
+plot_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,2)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s5 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b"), size = 13,
+                  x = c(0, .5), y = c(.83, .83)) # Add labels
+fig_s5
+ggsave(fig_s5, file = paste(plot_path,"fig_s4.pdf",sep=""))
+```
+
+## power differences in memory and classification
+
+Run permutations
+
+```{r}
+# for IES
+mem_v_cls_ies_pd = surr_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, nPerms = 3000, dv = "ies", resid = T, seed = 18)
+mem_v_cls_ies_obs = avg_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, dv = "ies", resid = T)
+mem_v_cls_ies_sts = getStats_cd(mem_v_cls_ies_pd, mem_v_cls_ies_obs$meanDiff, hz = 3:14)
+mem_v_cls_ies_plt = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts,ylinRg = c(-3,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon1",  lnColor2 = "turquoise1", titName="Mem vs Class FFT (IES)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)") +
+                              annotate("segment", x = 5.5, y = 4.6, xend = 8.6, yend = 4.6, size = 1, color = "maroon1")
+mem_v_cls_ies_sts; mem_v_cls_ies_plt
+```
+
+## phase difference between memory and classification
+
+```{r}
+# mem vs class phase
+grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "hr", color_a = "maroon3",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "hr", color_b = "turquoise3",
+                       fq = 7, resid = T, title = "Mem vs Cls HR", nbins = 10, titSiz = 25, typeD = "180")
+grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "rt", color_a = "maroon4",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "rt", color_b = "turquoise4",
+                       fq = 7, resid = T, title = "Mem vs Cls RT", nbins = 10, titSiz = 25, typeD = "180")
+grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "ies", color_a = "maroon1",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "ies", color_b = "turquoise1",
+                       fq = 7, resid = T, title = "Mem vs Cls IES", nbins = 10, titSiz = 25, typeD = "180")
+```
+
+### Supporting plot
+
+```{r}
+# general plot features
+ln_size = 1; titSiz = 12; axLabSiz = 10; axTicSize = .8; axLinSize = .8; asTxtSize = 8; fc = "bold"  #; ylinRg = c(8,15);
+# ------------------------------ panel 1 --------------------------------------
+p1 = grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "hr", color_a = "maroon3",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "hr", color_b = "turquoise3",
+                       fq = 7, resid = T, title = "Mem vs Cls HR", nbins = 10, titSiz = titSiz, typeD = "180")[[3]]
+# ------------------------------ panel 2 --------------------------------------
+p2 = grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "rt", color_a = "maroon4",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "rt", color_b = "turquoise4",
+                       fq = 7, resid = T, title = "Mem vs Cls RT", nbins = 10, titSiz = titSiz, typeD = "180")[[3]]
+# -------------------- Organize all the plots -----------------
+# set path
+plot_path = paste(master_path,"Results/",sep="")
+#
+layMat = as.matrix(rbind(c(1,1,2,2),
+                         c(1,1,2,2)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s9 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b"), size = 15,
+                  x = c(.02, .52), y = c(.95, .95)) # Add labels
+fig_s9
+ggsave(fig_s9, file = paste(plot_path,"fig_e5.pdf",sep=""))
+```
+
+
+
+## Peak classification and memory frequency comparison
+
+Classification is correlated with memory 
+
+```{r}
+# pre-pare summary data
+Ret = RetDat_v3_res %>% group_by(subject) %>% summarize(hr_ret = mean(hr_resid_tr, na.rm=T),
+                                                          rt_ret = mean(rt_resid_tr[asso_hit==1], na.rm=T),
+                                                          ies_ret = rt_ret/hr_ret)
+Enc = EncDat_v3_res %>% group_by(subject) %>% summarize(hr_enc = mean(hr_resid_tr, na.rm=T),
+                                                          rt_enc = mean(rt_resid_tr[class_TS_hit==1], na.rm=T),
+                                                          ies_enc = rt_enc/hr_enc)
+erDat = left_join(Ret,Enc)
+# make a plot
+shapiro.test(erDat$ies_enc); shapiro.test(erDat$ies_ret)
+r = round(cor.test(erDat$ies_enc,erDat$ies_ret, method="spearman")[[4]],2)
+p = round(cor.test(erDat$ies_enc,erDat$ies_ret, method="spearman")[[3]],5)
+titSiz = 12; lgndU = .3; ln_size = 1; fc = "bold"; lgndTxt = 6; lgTitsz = 8; axLabSiz = 10; axTicSize = 1; axLinSize = 1; asTxtSize = 8 
+yrng = c(700,4100); xrng = c(700,3000); ar = .6
+ggplot(erDat, aes(x=ies_enc,y=ies_ret)) + 
+  geom_point(color = "turquoise1", size = 2) + geom_point(color = "maroon1", size = 1) + 
+  geom_smooth(method=lm, color="maroon1", fill="turquoise1") + theme_classic() + xlim(xrng) + ylim(yrng) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face = fc), legend.position = c(.9,.9), 
+      legend.key.size = unit(lgndU, 'cm'), legend.title = element_text(size=lgTitsz), 
+        legend.text = element_text(size=lgndTxt)) +
+    labs(y= "Memory IES", x = "Classification IES") + ggtitle("Memory and Class. IES") + 
+  annotate(geom="text", x=2700, y=1000, label=expression(paste(rho," = .54***",sep="")), color="black", size=3.5) + 
+  coord_fixed(ratio = ar)
+cor.test(erDat$ies_enc,erDat$ies_ret, method="spearman")
+```
+
+```{r}
+# Function for Spearman's rho
+spearman_rho <- function(data, indices) {
+  #data = erDat
+  # resample data
+  data = data[indices, ]
+  # get statistic
+  test = unlist(cor.test(data$ies_enc, data$ies_ret, method = "spearman")$estimate)
+  return(test)
+}
+
+# get bootstrapped CI
+set.seed(123)
+boot_out <- boot(erDat, spearman_rho, R = 2000)
+boot.ci(boot_out, type = "perc")
+```
+
+
+But classification theta power is not correlated with memory theta power
+
+```{r}
+#select <- dplyr::select
+IPF_Mem = FFT_IDF(RetDat_v3_res, erTask = "M", dv = "ies", resid = T, fq_rng = c(3:10))
+IPF_Cls = FFT_IDF(EncDat_v3_res, erTask = "C", dv = "ies", resid = T, fq_rng = c(3:10))
+colnames(IPF_Mem) <- c("subject","mem_hz","mem_pwr"); colnames(IPF_Cls) <- c("subject","cls_hz","cls_pwr")
+memCls_dat = left_join(IPF_Cls,IPF_Mem, by = "subject") %>% na.omit()
+# compare power
+#ggplot(memCls_dat, aes(x=cls_pwr,y=mem_pwr)) + geom_point() + geom_smooth(method=lm) + theme_classic()
+#cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr)
+# make a nice plot
+shapiro.test(memCls_dat$mem_pwr); shapiro.test(memCls_dat$cls_pwr)
+r = round(cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr, method="spearman")[[4]],3)
+p = round(cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr, method="spearman")[[3]],3)
+titSiz = 12; lgndU = .3; ln_size = 1; fc = "bold"; lgndTxt = 6; lgTitsz = 8; axLabSiz = 10; axTicSize = 1; axLinSize = 1; asTxtSize = 8 
+yrng = c(0,60); xrng = c(0,80); ar = 1.1
+ggplot(memCls_dat, aes(x=cls_pwr,y=mem_pwr)) + 
+  geom_point(color = "turquoise1", size = 2) + geom_point(color = "maroon1", size = 1) + 
+  geom_smooth(method=lm, color="maroon1", fill="turquoise1") + theme_classic() + xlim(xrng) + ylim(yrng) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz,  hjust = .5, face = fc), legend.position = c(.9,.9), 
+      legend.key.size = unit(lgndU, 'cm'), legend.title = element_text(size=lgTitsz), 
+        legend.text = element_text(size=lgndTxt)) +
+    labs(y= "Memory IES Power (IPF)", x = "Classification IES Power (IPF)") + ggtitle("Memory and Classification Power") + 
+  annotate(geom="text", x=60, y=5, label=expression(paste(rho," = -0.11",sep="")), color="black", size=3.5) + 
+  coord_fixed(ratio = ar)
+cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr, method="spearman")
+```
+
+
+```{r}
+# Function for Spearman's rho
+spearman_rho <- function(data, indices) {
+  #data = erDat
+  # resample data
+  data = data[indices, ]
+  # get statistic
+  test = unlist(cor.test(data$mem_pwr, data$cls_pwr, method = "spearman")$estimate)
+  return(test)
+}
+
+# get bootstrapped CI
+set.seed(123)
+boot_out <- boot(memCls_dat, spearman_rho, R = 2000)
+boot.ci(boot_out, type = "perc")
+```
+
+```{r}
+# compute Bayes Factor for null correlation 
+#<https://rdrr.io/cran/BayesFactor/man/correlationBF.html>
+bf = BayesFactor::correlationBF(memCls_dat$mem_pwr,memCls_dat$cls_pwr)
+samples = posterior(bf, iterations = 10000)
+bf
+summary(samples)
+plot(samples[,"rho"])
+```
+
+
+## Chapter 2 joint figure
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_3", sep=""))) {
+  dir.create(paste(plot_path, "Fig_3", sep=""))
+}
+# things to copy and paste 
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; h = 30
+# within theme
+# --------------------------- Panel 1 --------------------------------
+ar = .5; yrng = c(1300,2100)
+p1 = ggplot(pldf_ies, aes(x=SOAcorr_ct,y=mn, color=Condition)) + # 
+  geom_line(aes(color=Condition), size=ln_size) + scale_x_continuous(n.breaks = 14) +
+  geom_ribbon(aes(ymin=lb,ymax=ub, fill=Condition), alpha=0.3, color = NA) + theme_classic() + ylim(yrng) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      legend.key.size = unit(lgndU, 'cm'), legend.title = element_text(size=asTxtSize), 
+      legend.text = element_text(size=asTxtSize), legend.position = c(.3,.88),
+  # added for NHB
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)),
+      plot.margin = margin(mp, mp, mp, mp), legend.spacing = unit(1, "pt"), legend.margin = margin(0, 0, 0, 0)) +
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
+  # added for NHB
+    labs(y= "IES (RT/HR)", x = "Encoding SOA (ms)") + ggtitle("Inverse Efficiency by SOA") +
+  scale_fill_manual(values=c("turquoise1","maroon1")) + 
+  scale_color_manual(values=c("turquoise1","maroon1")) 
+ggsave(paste(plot_path,"Fig_3/fig_3_a.pdf",sep=""), p1,width = 55, height = h, units = "mm")
+# --------------------------- Panel 2 --------------------------------
+r = round(cor.test(erDat$ies_enc,erDat$ies_ret, method="spearman")[[4]],2)
+p = round(cor.test(erDat$ies_enc,erDat$ies_ret, method="spearman")[[3]],5)
+yrng = c(800,4100); xrng = c(800,4100); ar = .48; bdt_sz = .25; smdt_sz = .5; txtsz = 1.5
+p2 = ggplot(erDat, aes(x=ies_enc,y=ies_ret)) + 
+  geom_point(color = "turquoise1", size = smdt_sz) + geom_point(color = "maroon1", size = bdt_sz) + 
+  geom_smooth(method=lm, color="maroon1", fill="turquoise1", size=smdt_sz) + 
+  theme_classic() + #xlim(xrng) + ylim(yrng) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = asTxtSize),
+      #legend.position = c(.9,.9), 
+      legend.key.size = unit(lgndU, 'cm'), legend.title = element_text(size=lgTitsz), 
+        legend.text = element_text(size=lgndTxt),
+      # added for NHB
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)),
+      plot.margin = margin(mp, mp, mp, mp), legend.spacing = unit(1, "pt"), legend.margin = margin(0, 0, 0, 0)
+    ) +
+      scale_x_continuous(breaks = seq(1000,4000,500), expand = expansion(mult = 0, add = 100)) +
+      scale_y_continuous(breaks = seq(1000,4000,500), expand = expansion(mult = 0, add = 500)) +
+      # added for NHB) +
+    labs(y= "Memory IES", x = "Classification IES") + ggtitle("Memory and Classification IES") #+ 
+  #annotate(geom="text", x=2700, y=1100, label=expression(paste(rho," = 0.54***",sep="")), color="black", size=asTxtSize)
+ggsave(paste(plot_path,"Fig_3/fig_3_b.pdf",sep=""), p2,width = 45, height = h, units = "mm")
+# --------------------------- Panel 3 --------------------------------
+lgndU = .2; 
+p3 = FFT_plot_mlt(clsFFT, ylinRg = c(7,14), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              colors = c("turquoise3","turquoise4","turquoise1"), 
+                              lines = c("dashed","solid"), labels = c("HR","IES","RT"), 
+                              titName="Classification FFT", yAxLab="Spectral Power", xAxLab="Frequency (Hz)",
+                              fc = fc, lgndU = lgndU, lgnd_pz = "right", lgndTit = "", lgndTxt = axLabSiz, lgTitsz = lgTitsz) +
+  theme(
+  # added for NHB
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)),
+      plot.margin = margin(mp, mp, mp, mp), legend.spacing = unit(1, "pt"), legend.margin = margin(0, 0, 0, 0)
+      ) 
+  # added for NHB
+p3
+ggsave(paste(plot_path,"Fig_3/fig_3_c.pdf",sep=""), p3,width = 55, height = h, units = "mm")
+# --------------------------- Panel 4 --------------------------------
+p4 = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts,ylinRg = c(-3,5), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, 
+                              axLinSize = axLinSize, asTxtSize = asTxtSize, fc = "plain",
+                              lnColor1 = "maroon1",  lnColor2 = "turquoise1", 
+                              titName="IES Power Difference: Mem-Class", 
+                              yAxLab="Pwr Diff: Mem-Class", xAxLab="Frequency (Hz)") +
+                              annotate("segment", x = 5.5, y = 4.8, xend = 8.6, yend = 4.8, size = ln_size, color = "maroon1")
+p4
+ggsave(paste(plot_path,"Fig_3/fig_3_d.pdf",sep=""), p4,width = 45, height = h, units = "mm")
+# --------------------------- Panel 5 --------------------------------
+r = round(cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr, method="spearman")[[4]],3)
+p = round(cor.test(memCls_dat$mem_pwr,memCls_dat$cls_pwr, method="spearman")[[3]],3)
+yrng = c(0,60); xrng = c(0,80); ar = .95; bdt_sz = .25; smdt_sz = .5; txtsz = 1.5
+p5 = ggplot(memCls_dat, aes(x=cls_pwr,y=mem_pwr)) + 
+  geom_point(color = "turquoise1", size = smdt_sz) + geom_point(color = "maroon1", size = bdt_sz) + 
+  geom_smooth(method=lm, color="maroon1", fill="turquoise1", size = ln_size) + 
+  theme_classic() + #xlim(xrng) + ylim(yrng) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      #legend.position = c(.9,.9), 
+      legend.key.size = unit(lgndU, 'cm'), legend.title = element_text(size=lgTitsz), 
+        legend.text = element_text(size=lgndTxt),
+      # added for NHB
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)),
+      plot.margin = margin(mp, mp, mp, mp), legend.spacing = unit(1, "pt"), legend.margin = margin(0, 0, 0, 0)
+    ) +
+      scale_x_continuous(breaks = seq(0,80,10), expand = expansion(mult = 0, add = 2.5)) +
+      scale_y_continuous(breaks = seq(0,60,10), expand = expansion(mult = 0, add = 4)) +
+      # added for NHB) +) +
+    labs(y= "Memory IES Pwr (a.u.)", x = "Classification IES Pwr (a.u.)") + ggtitle("Memory and Classification IES Power") #+ 
+  #annotate(geom="text", x=60, y=2, label=expression(paste(rho," = -0.11",sep="")), color="black", size=txtsz) 
+p5
+ggsave(paste(plot_path,"Fig_3/fig_3_e.pdf",sep=""), p5,width = 45, height = h, units = "mm")
+# --------------------------- Panel 6 --------------------------------
+p6 = grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "ies", color_a = "maroon1",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "ies", color_b = "turquoise1",
+                       fq = 7, resid = T, title = "IES Phase Diff: Mem-Class", fc = "plain", nbins = 8, axLabSiz = axLabSiz, 
+                       titSiz = titSiz, asTxtSize = asTxtSize, typeD = "180", ln_size = ln_size)[[3]] +
+                       theme(axis.text.x = element_text(size=2), axis.text.y = element_text(size=2))
+p6
+ggsave(paste(plot_path,"Fig_3/fig_3_f.pdf",sep=""), p6,width = 35, height = 35, units = "mm")
+```
+
+
+
+## Extended Data
+
+### E3: Cieling control analysis
+
+Organize the Data
+
+```{r}
+# get SOA dat
+ClsAcc_hr = soa_avg(EncDat_v3_res, erTask = "C", dv = "hr", resid = F, rand = F, NArm = T, drp = T)[[1]]
+MemAcc_hr = soa_avg(RetDat_v3_res, erTask = "M", dv = "hr", resid = F, rand = F, NArm = T, drp = T)[[1]]
+# bind
+colnames(ClsAcc_hr) <- c("subject","SOAcorr_ct","cls_hr"); colnames(MemAcc_hr) <- c("subject","SOAcorr_ct","mem_hr")
+memClsDat = left_join(ClsAcc_hr, MemAcc_hr, by = c("subject","SOAcorr_ct"))
+# get proportion ones
+propCiel = memClsDat %>% group_by(subject) %>% summarize(Classification = length(which(cls_hr == 1))/28, 
+                                                         Memory = length(which(mem_hr == 1))/28)
+propCiel$subject <- as.character(propCiel$subject)
+# get peak power
+clsPow = FFT_IDF(inDat = EncDat_v3_res, erTask = "C", dv = "hr", resid = T, fq_rng = c(3:10))
+clsPow = clsPow %>% select(subject,pwr); colnames(clsPow) <- c("subject","Classification")
+memPow = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10))
+memPow = memPow %>% select(subject,pwr); colnames(memPow) <- c("subject","Memory")
+indPow = left_join(clsPow,memPow, by = "subject")
+# bind and organize
+propCiel_mlt = reshape2::melt(propCiel); colnames(propCiel_mlt)[3] <- "propCiel"
+indPow_mlt = reshape2::melt(indPow); colnames(indPow_mlt)[3] <- "indPower"
+cielPowDat = left_join(propCiel_mlt,indPow_mlt, by = c("subject","variable"))
+# t.test
+t.test(filter(cielPowDat, variable == "Classification")$propCiel,filter(cielPowDat, variable == "Memory")$propCiel, paired=T)
+mean(filter(cielPowDat, variable == "Classification")$propCiel)
+sd(filter(cielPowDat, variable == "Classification")$propCiel)
+mean(filter(cielPowDat, variable == "Memory")$propCiel)
+sd(filter(cielPowDat, variable == "Memory")$propCiel)
+```
+
+Make supporting plot
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e3", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e3", sep=""))
+}
+# things to copy and paste 
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"
+# ------------------------------ panel 2 --------------------------------------
+t.test(filter(cielPowDat, variable == "Classification")$propCiel,filter(cielPowDat, variable == "Memory")$propCiel, paired=T)
+yAxLab = "Proportion SOAs at Ceiling"; titName = "Proportion Ceiling"; colors = c("turquoise3","maroon3")
+s1 = ggplot(cielPowDat, aes(x=variable, y=propCiel)) + theme_classic() +
+          geom_violin(aes(color = variable, fill = variable), alpha = .3, color=NA) + 
+          geom_jitter(aes(color=variable), shape=16,position = position_jitterdodge(dodge.width = 1,
+                                                                  jitter.width = .3,jitter.height = 0), size=.2,alpha=.5) + 
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, face=fc, hjust = .5, margin = margin(b = 2)),
+            plot.margin = margin(mp, mp, mp, mp)) +
+          scale_x_discrete(labels = labs) +
+          scale_y_continuous(n.breaks = 8) +
+          labs(y= yAxLab, x = "Response Type") + ggtitle(titName) + theme(legend.position="none") +
+          stat_summary(fun.data = "mean_cl_normal", colour = "black", linewidth = .25, size = .15, stroke = 0) +
+  annotate("segment", x = 1, xend = 2, y = .52, yend = .52, colour = "black", size = seg_size) +
+  annotate("text", x = 1.5, y = .58, label = "***", size = ask_size) 
+  #geom_signif(comparisons = list(c("Classification", "Memory")), y_position = .55, annotation = c("***"), vjust = -.1, textsize = 3.5)
+s1
+ggsave(paste(plot_path,"Fig_e3/fig_e3_a.pdf",sep=""), s1 ,width = 45, height = 40, units = "mm")
+  # ------------------------------ panel 2 --------------------------------------
+# compare prop-cieling to power
+cielPowDat$variable_bin <- ifelse(cielPowDat$variable == "Classification", -0.5,0.5)
+clsmem_mod = lm(indPower ~ propCiel*variable_bin, data=cielPowDat) #%>% summary()
+clsmem_emm = joint_tests(clsmem_mod)
+simp_eff = emtrends(clsmem_mod, pairwise ~ variable_bin, var = "propCiel", infer = T); rnd = 2
+Cls_b = round(as.data.frame(simp_eff$emtrends)$propCiel.trend[1],rnd)
+Cls_p = round(as.data.frame(simp_eff$emtrends)$p.value[1],rnd)
+Mem_b = round(as.data.frame(simp_eff$emtrends)$propCiel.trend[2],rnd)
+Mem_p = round(as.data.frame(simp_eff$emtrends)$p.value[2],rnd)
+int_b = round(as.data.frame(simp_eff$contrasts)$estimate,rnd)
+int_p = round(as.data.frame(simp_eff$contrasts)$p.value,rnd)
+# plot
+ar = .006; yAxLab = "Spectral Power"; titName = "Proportion Ceiling and Power"; colors = c("turquoise3","maroon3"); lgPoz = "none"; txtSz=1 
+s2 = ggplot(cielPowDat, aes(x=propCiel, y=indPower, group=variable)) + theme_classic() +
+          geom_point(aes(color=variable),size=.1, alpha=.5) + 
+          geom_smooth(method=lm,aes(fill=variable,color=variable), alpha = .3, size = ln_size) +
+          scale_color_manual(values=colors) +
+          scale_fill_manual(values=colors) + #ylim(c(0,1)) + 
+          theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+            axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+            axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+            plot.title = element_text(size = titSiz, hjust = .5, face=fc, margin = margin(b = 2)),
+            plot.margin = margin(mp, mp, mp, mp)) +
+          #scale_x_discrete(labels = labs) +
+          #scale_y_continuous(n.breaks = 8, limits=c(0,1)) +
+          labs(y= yAxLab, x = "Proportion SOAs at Ceiling") + ggtitle(titName) + theme(legend.position=lgPoz)
+  #annotate(geom="text", x=.38, y=65, label=paste("Cls: b = ",Cls_b,", p = ",Cls_p,sep=""), color=colors[1], size=txtSz) +
+  #annotate(geom="text", x=.38, y=60, label=paste("Mem: b = ",Mem_b,", p = ",Mem_p,sep=""), color=colors[2], size=txtSz) +
+  #annotate(geom="text", x=.38, y=55, label=paste("Mem vs Cls: b = ",int_b,", p = ",int_p,sep=""), color="black", size=txtSz)
+s2
+ggsave(paste(plot_path,"Fig_e3/fig_e3_b.pdf",sep=""), s2,width = 45, height = 40, units = "mm")
+```
+
+
+
+### E4: Memory vs Classification power for other DV's
+
+```{r}
+# for HR
+mem_v_cls_hr_pd = surr_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, nPerms = 3000, dv = "hr", resid = T, seed = 18)
+mem_v_cls_hr_obs = avg_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, dv = "hr", resid = T)
+mem_v_cls_hr_sts = getStats_cd(mem_v_cls_hr_pd, mem_v_cls_hr_obs$meanDiff, hz = 3:14)
+mem_v_cls_hr_plt = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts,ylinRg = c(-5,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (HR)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# for RT
+mem_v_cls_rt_pd = surr_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, nPerms = 3000, dv = "rt", resid = T, seed = 18)
+mem_v_cls_rt_obs = avg_mVc_pwrDiff(EncDat_v3_res, RetDat_v3_res, dv = "rt", resid = T)
+mem_v_cls_rt_sts = getStats_cd(mem_v_cls_rt_pd, mem_v_cls_rt_obs$meanDiff, hz = 3:14)
+mem_v_cls_rt_plt = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts,ylinRg = c(-5,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (RT)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+mem_v_cls_hr_sts; mem_v_cls_hr_plt
+mem_v_cls_rt_sts; mem_v_cls_rt_plt
+```
+
+Make joint plot
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e4", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e4", sep=""))
+}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"
+# ---------------------- plot 1 ----------------------------
+p1 = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts,ylinRg = c(-3,5), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", fc = "plain",
+                     titName="Mem. vs Class. HR (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)")
+p1
+ggsave(paste(plot_path,"Fig_e4/fig_e4_a.pdf",sep=""), p1,width = 45, height = 30, units = "mm")
+# ---------------------- Plot 2 -----------------------------
+p2 = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts,ylinRg = c(-3,5), ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon4",  lnColor2 = "turquoise4", fc = "plain",
+                     titName="Mem. vs Class. RT (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)")
+p2
+ggsave(paste(plot_path,"Fig_e4/fig_e4_b.pdf",sep=""), p2,width = 45, height = 30, units = "mm")
+```
+
+#### supplement - previous versions
+
+Get the power difference - version 1
+
+```{r}
+# for HR
+mem_v_cls_hr_pd_v1 = surr_mVc_pwrDiff(EncDat_v1, RetDat_v1, nPerms = 3000, dv = "hr", lat = 100, resid = F, seed = 18)
+mem_v_cls_hr_obs_v1 = avg_mVc_pwrDiff(EncDat_v1, RetDat_v1, dv = "hr", lat = 100, resid = F)
+mem_v_cls_hr_sts_v1 = getStats_cd(mem_v_cls_hr_pd_v1, mem_v_cls_hr_obs_v1$meanDiff, hz = 3:14)
+mem_v_cls_hr_plt_v1 = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts_v1,ylinRg = c(-5,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (HR)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# for RT
+mem_v_cls_rt_pd_v1 = surr_mVc_pwrDiff(EncDat_v1, RetDat_v1, nPerms = 3000, dv = "rt", lat = 100, resid = F, seed = 18)
+mem_v_cls_rt_obs_v1 = avg_mVc_pwrDiff(EncDat_v1, RetDat_v1, dv = "rt", lat = 100, resid = F)
+mem_v_cls_rt_sts_v1 = getStats_cd(mem_v_cls_rt_pd_v1, mem_v_cls_rt_obs_v1$meanDiff, hz = 3:14)
+mem_v_cls_rt_plt_v1 = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts_v1,ylinRg = c(-5,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (RT)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# for IES
+mem_v_cls_ies_pd_v1 = surr_mVc_pwrDiff(EncDat_v1, RetDat_v1, nPerms = 3000, dv = "ies", lat = 100, resid = F, seed = 18)
+mem_v_cls_ies_obs_v1 = avg_mVc_pwrDiff(EncDat_v1, RetDat_v1, dv = "ies", lat = 100, resid = F)
+mem_v_cls_ies_sts_v1 = getStats_cd(mem_v_cls_ies_pd_v1, mem_v_cls_ies_obs_v1$meanDiff, hz = 3:14)
+mem_v_cls_ies_plt_v1 = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts_v1,ylinRg = c(-5,5), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (IES)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+mem_v_cls_hr_sts_v1; mem_v_cls_hr_plt_v1
+mem_v_cls_rt_sts_v1; mem_v_cls_rt_plt_v1
+mem_v_cls_ies_sts_v1; mem_v_cls_ies_plt_v1
+```
+
+Get the power difference - version 2
+
+```{r}
+# for HR
+mem_v_cls_hr_pd_v2 = surr_mVc_pwrDiff(EncDat_v2, RetDat_v2, nPerms = 3000, dv = "hr", lat = 100, resid = F, seed = 18)
+mem_v_cls_hr_obs_v2 = avg_mVc_pwrDiff(EncDat_v2, RetDat_v2, dv = "hr", lat = 100, resid = F)
+mem_v_cls_hr_sts_v2 = getStats_cd(mem_v_cls_hr_pd_v2, mem_v_cls_hr_obs_v2$meanDiff, hz = 3:14)
+mem_v_cls_hr_plt_v2 = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts_v2,ylinRg = c(-7,7), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (HR)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# for RT
+mem_v_cls_rt_pd_v2 = surr_mVc_pwrDiff(EncDat_v2, RetDat_v2, nPerms = 3000, dv = "rt", lat = 100, resid = F, seed = 18)
+mem_v_cls_rt_obs_v2 = avg_mVc_pwrDiff(EncDat_v2, RetDat_v2, dv = "rt", lat = 100, resid = F)
+mem_v_cls_rt_sts_v2 = getStats_cd(mem_v_cls_rt_pd_v2, mem_v_cls_rt_obs_v2$meanDiff, hz = 3:14)
+mem_v_cls_rt_plt_v2 = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts_v2,ylinRg = c(-7,7), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (RT)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# for IES
+mem_v_cls_ies_pd_v2 = surr_mVc_pwrDiff(EncDat_v2, RetDat_v2, nPerms = 3000, dv = "ies", lat = 100, resid = F, seed = 18)
+mem_v_cls_ies_obs_v2 = avg_mVc_pwrDiff(EncDat_v2, RetDat_v2, dv = "ies", lat = 100, resid = F)
+mem_v_cls_ies_sts_v2 = getStats_cd(mem_v_cls_ies_pd_v2, mem_v_cls_ies_obs_v2$meanDiff, hz = 3:14)
+mem_v_cls_ies_plt_v2 = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts_v2,ylinRg = c(-7,7), ar = 1, ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", 
+                     titName="Mem vs Class FFT (IES)", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+mem_v_cls_hr_sts_v2; mem_v_cls_hr_plt_v2
+mem_v_cls_rt_sts_v2; mem_v_cls_rt_plt_v2
+mem_v_cls_ies_sts_v2; mem_v_cls_ies_plt_v2
+```
+
+##### Make supporting plot
+
+Make joint plot
+
+```{r}
+# ---------------------- Plot 1 -----------------------------
+# set adjusted parameters
+ar = .8; ylinRg = c(-6.5,6.5); ln_size = 1; titSiz = 10; axLabSiz = 8; axTicSize = .8; axLinSize = .8; asTxtSize = 6; dt_sz = .6
+lgndTxt = 6; lgTitsz = 8; lgndU = .4; fc = "bold"; lgnd_pz = "right" #c(1,.5)
+# ---------------------- plot 1 ----------------------------
+p1 = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts_v1, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", fc = fc, 
+                     titName="Mem vs Class HR P1 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)") +
+  annotate("segment", x = 7.5, y = 4, xend = 8.5, yend = 4, size = 1, color = "grey")
+# ---------------------- Plot 2 -----------------------------
+p2 = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts_v1, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon4",  lnColor2 = "turquoise4", fc = fc,
+                     titName="Mem vs Class RT P1 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)") 
+# ---------------------- Plot 3 -----------------------------
+p3 = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts_v1, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon1",  lnColor2 = "turquoise1", fc = fc, 
+                     titName="Mem vs Class IES P1 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)")
+# ---------------------- plot 4 ----------------------------
+p4 = mkCompSPD_2t_plot_v2(mem_v_cls_hr_sts_v2, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon3",  lnColor2 = "turquoise3", fc = fc, 
+                     titName="Mem vs Class HR P2 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)") 
+# ---------------------- Plot 5 -----------------------------
+p5 = mkCompSPD_2t_plot_v2(mem_v_cls_rt_sts_v2, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon4",  lnColor2 = "turquoise4", fc = fc, 
+                     titName="Mem vs Class RT P2 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)") +
+  annotate("segment", x = 3.5, y = 6, xend = 4.5, yend = 6, size = 1, color = "maroon4") 
+# ---------------------- Plot 6 -----------------------------
+p6 = mkCompSPD_2t_plot_v2(mem_v_cls_ies_sts_v2, ylinRg = ylinRg, ar = ar, ln_size = ln_size,  
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "maroon1",  lnColor2 = "turquoise1", fc = fc, 
+                     titName="Mem vs Class IES P2 (FFT)", 
+                              yAxLab="Power Diff: Mem-Class", xAxLab="Frequency (Hz)") 
+# ---------------------- Combine Plots -----------------------------
+perm_path = paste(master_path,"Results/r1/",sep="")
+#
+layMat = as.matrix(rbind(c(1,2,3),
+                         c(4,5,6)))
+# returns a gtable (gt)
+gt <- arrangeGrob(p1,p2,p3,p4,p5,p6,                               # bar plot spaning two columns
+             ncol = ncol(layMat), nrow = nrow(layMat),
+             layout_matrix = layMat)
+# Add labels to the arranged plots
+fig_s7 <- as_ggplot(gt) +                                # transform to a ggplot
+  draw_plot_label(label = c("a", "b","c","d", "e","f"), size = 13,
+                  x = c(.01, .34, .67, .01, .34, .67), y = c(1, 1, 1,.5, .5, .5)) # Add labels
+fig_s7
+ggsave(fig_s7, file = paste(plot_path,"fig_s5.pdf",sep=""))
+```
+
+
+### E5: Phase difference for other DV's
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e5", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e5", sep=""))
+}
+# things to copy and paste 
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; h = 30
+# within theme
+# hr
+s1 = grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "hr", color_a = "maroon3",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "hr", color_b = "turquoise3",
+                       fq = 7, resid = T, title = "HR Phase Diff: Mem-Class", fc = "plain", nbins = 8, axLabSiz = axLabSiz, 
+                       titSiz = titSiz, asTxtSize = asTxtSize, typeD = "180", ln_size = ln_size)[[3]] +
+                       theme(axis.text.x = element_text(size=2), axis.text.y = element_text(size=2))
+s1 
+ggsave(paste(plot_path,"Fig_e5/fig_e5_a.pdf",sep=""), s1,width = 35, height = 35, units = "mm")
+# rt
+s2 = grpPhaseDiff(inDat_a = RetDat_v3_res, erTask_a = "M", dv_a = "rt", color_a = "maroon4",
+                       inDat_b = EncDat_v3_res, erTask_b = "C", dv_b = "rt", color_b = "turquoise4",
+                       fq = 7, resid = T, title = "RT Phase Diff: Mem-Class", fc = "plain", nbins = 8, axLabSiz = axLabSiz, 
+                       titSiz = titSiz, asTxtSize = asTxtSize, typeD = "180", ln_size = ln_size)[[3]] +
+                       theme(axis.text.x = element_text(size=2), axis.text.y = element_text(size=2))
+s2
+ggsave(paste(plot_path,"Fig_e5/fig_e5_b.pdf",sep=""), s2,width = 35, height = 35, units = "mm")
+```
+
+
+# Ch 3 - Look at how oscillations are modulated by putative cholinergic factors
+
+## Nicotine
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+# for HR
+IDF_MemHr = IDF_analysis(RetDat_v3_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10), noInt = T)
+memHR_PwrMod = round(as.matrix(as.data.frame(summary(IDF_MemHr$pwr_model)['coefficients'])),3)
+write.csv(memHR_PwrMod,file=paste(plot_path,"memHR_PwrMod.csv",sep=""))
+#summary(IDF_MemHr$hz_model)
+# for RT
+IDF_MemRt = IDF_analysis(RetDat_v3_res, erTask = "M", dv = "rt", resid = T, fq_rng = c(3:10), noInt = T)
+memRT_PwrMod = round(as.matrix(as.data.frame(summary(IDF_MemRt$pwr_model)['coefficients'])),3)
+write.csv(memRT_PwrMod,file=paste(plot_path,"memRT_PwrMod.csv",sep=""))
+#summary(IDF_MemRt$hz_model)
+# for IES
+IDF_MemIes = IDF_analysis(RetDat_v3_res, erTask = "M", dv = "ies", resid = T, fq_rng = c(3:10), noInt = T)
+memIES_PwrMod = round(as.matrix(as.data.frame(summary(IDF_MemIes$pwr_model)['coefficients'])),3)
+write.csv(memIES_PwrMod,file=paste(plot_path,"memIES_PwrMod.csv",sep=""))
+#summary(IDF_MemIes$hz_model)
+# stuff
+memHR_PwrMod; memRT_PwrMod; memIES_PwrMod
+```
+
+Make some plots
+
+```{r}
+# organize data
+IDF_MemHr_dat = as.data.frame(IDF_MemHr$data)
+plt_pwr_model = lm(pwr ~ sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat)
+IDF_MemHr_dat$resid <- plt_pwr_model$residuals # add residuals to data
+IDF_MemHr_dat$nicLab <- ifelse(IDF_MemHr_dat$nicotine == 0.5,"Nic","NonNic")
+# plot
+titSiz = 20; axLabSiz = 13; axTicSize = 1; axLinSize = 1; asTxtSize = 10; ylinRg = c(-3.5,6); ln_size = 1; ar = .03
+col1 = 'brown4'; col2 = 'sienna2'
+# Nicotine effect
+tit = "Nicotine (Memory HR)"; xlab = "Group"; ylab = "Theta Power (resid AU)" #;color = "maroon3"
+p_nic = ggplot(IDF_MemHr_dat, aes(x=nicLab, y=resid)) + geom_violin(aes(color=nicLab,fill=nicLab), alpha = .4) + 
+  #geom_dotplot(aes(color=nicLab,fill=nicLab), binaxis='y', stackdir='center', size=ln_size) + 
+  geom_jitter(aes(color=nicLab,fill=nicLab), binaxis='y', stackdir='center', size=ln_size, alpha = .7) + 
+  stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange", color="black", size=.7) + 
+  theme_classic() + scale_color_manual(values=c(col1,col2)) + scale_fill_manual(values=c(col1,col2)) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5)) +  # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) + coord_fixed(ratio = ar) + #ylim(c(0,1)) +
+  geom_signif(comparisons = list(c("Nic", "NonNic")), y_position = 35, annotation = c("*"), vjust = .1) +
+  theme(legend.position="none")
+p_nic
+```
+
+Get confidence intervals
+
+```{r}
+hr_pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat)
+summary(hr_pwr_model)
+confint(hr_pwr_model, method = "Wald")
+```
+
+```{r}
+#library(rsq)
+```
+
+Get confidence intervals
+
+```{r}
+# for accuracy 
+hr_pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat)
+summary(hr_pwr_model)
+CI = round(confint(hr_pwr_model, method = "Wald"), 3)
+R2 = round(as.matrix(c(NA,rsq.partial(hr_pwr_model)$partial.rsq) ), 3)
+memHR_PwrMod = cbind(memHR_PwrMod, CI, R2)
+write.csv(memHR_PwrMod,file=paste(plot_path,"memHR_PwrMod.csv",sep=""))
+```
+
+```{r}
+# for rt 
+IDF_MemRt_dat = as.data.frame(IDF_MemRt$data)
+rt_pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemRt_dat)
+summary(rt_pwr_model)
+CI = round(confint(rt_pwr_model, method = "Wald"), 3)
+R2 = round(as.matrix(c(NA,rsq.partial(rt_pwr_model)$partial.rsq) ), 3)
+memRT_PwrMod = cbind(memRT_PwrMod, CI, R2)
+write.csv(memRT_PwrMod,file=paste(plot_path,"memRT_PwrMod.csv",sep=""))
+```
+
+```{r}
+# for ies 
+IDF_MemIes_dat = as.data.frame(IDF_MemIes$data)
+ies_pwr_model = lm(pwr ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemIes_dat)
+summary(ies_pwr_model)
+CI = round(confint(ies_pwr_model, method = "Wald"), 3)
+R2 = round(as.matrix(c(NA,rsq.partial(ies_pwr_model)$partial.rsq) ), 3)
+memIES_PwrMod = cbind(memIES_PwrMod, CI, R2)
+write.csv(memIES_PwrMod,file=paste(plot_path,"memIES_PwrMod.csv",sep=""))
+```
+
+### Supporting analysis - covariates and overall performance
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+# for memory 
+memSum = RetDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(asso_hit, na.rm=T), fa = mean(asso_fa, na.rm=T), chr = hr-fa)
+memSum$subject <- as.character(memSum$subject)
+IDF_fac = getIDF_factors(inDat = RetDat_v4_res)
+sumDat = left_join(memSum,IDF_fac, by= "subject")
+memModel = lm(chr ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = sumDat)
+memModDat = round(as.matrix(as.data.frame(summary(memModel)['coefficients'])),3)
+# add CI and R2
+CI = round(confint(memModel, method = "Wald"), 3)
+R2 = round(as.matrix(c(NA,rsq.partial(memModel)$partial.rsq) ), 3)
+memModDat = cbind(memModDat, CI, R2)
+write.csv(memModDat,file=paste(plot_path,"memPerfMod.csv",sep=""))
+# for classification
+clsSum = EncDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(class_TS_hit, na.rm=T))
+clsSum$subject <- as.character(clsSum$subject)
+IDF_fac = getIDF_factors(inDat = EncDat_v4_res)
+sumDat = left_join(clsSum,IDF_fac, by= "subject")
+clsModel = lm(hr ~ nicotine + sex + cannabis + 
+       anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = sumDat) 
+clsModDat = round(as.matrix(as.data.frame(summary(clsModel)['coefficients'])),3)
+write.csv(clsModDat,file=paste(plot_path,"clsPerfMod.csv",sep=""))
+```
+
+## zone analysis
+
+### Get Zone values 
+
+```{r}
+zoneDat_v3 = getZoneMet_rec(EncDat_v3_res, RetDat_v3_res, acrSub = F)
+# model with random slope and intercept
+zone_classification = glmer(class_TS_hit ~ zone_out_esterman + (1 + zone_out_esterman|subject), 
+                     na.action = "na.exclude", data = zoneDat_v3$enc, family = binomial) 
+zone_memory = glmer(asso_hit ~ zone_out_esterman + (1 + zone_out_esterman|subject), 
+                     na.action = "na.exclude", data = zoneDat_v3$ret, family = binomial) 
+zone_classification %>% summary()
+zone_memory %>% summary()
+```
+
+Get confidence intervals
+
+```{r}
+confint(zone_classification, method = "Wald")
+confint(zone_memory, method = "Wald")
+```
+
+Get effect size
+
+```{r}
+#install.packages("MuMIn")
+#library(MuMIn)
+summary(zone_classification)$coefficients
+r.squaredGLMM(zone_classification)
+summary(zone_memory)$coefficients
+r.squaredGLMM(zone_memory)
+```
+
+### Zone metric plot
+
+```{r}
+lbb = 1; ubb = 4
+# get max subject for plotting
+encCor = zoneDat_v3$enc %>% group_by(subject,block) %>% summarize(r = cor.test(class_TS_hit,zone_out_esterman)[[4]], p = cor.test(class_TS_hit,zone_out_esterman)[[3]])   
+retCor = zoneDat_v3$ret %>% group_by(subject,block) %>% summarize(r = cor.test(asso_hit,zone_out_esterman)[[4]], p = cor.test(asso_hit,zone_out_esterman)[[3]])
+colnames(encCor) <- c("subject","block","enc_r","enc_p"); colnames(retCor) <- c("subject","block","ret_r","ret_p")
+joined_dat = left_join(encCor, retCor, by = c("subject","block")) %>% mutate(sum_r = sum(enc_r,ret_r)) %>% arrange(sum_r) %>% na.omit()
+maxSub = unique(joined_dat[which(joined_dat$sum_r == max(joined_dat$sum_r)),]$subject)
+# bind e and r
+ret = select(zoneDat_v3$ret, subject, block, encTrialnum, asso_hit)
+colnames(ret) <- c("subject", "block", "trialnum", "asso_hit")
+erDat = left_join(zoneDat_v3$enc,ret, by = c("subject","block","trialnum"))
+# organize their trial data
+sub_cutoff = median(filter(erDat, subject == maxSub)$RT_deviance)
+toPlot = erDat %>% filter(subject == maxSub, block > lbb, block < ubb) %>%  
+  select(block, trialnum, preceding_RT_deviance, RT_deviance, class_TS_hit, asso_hit) %>% na.omit()
+toPlot$allTrials <- 1:length(toPlot[,1])
+toPlot$cls_err = ifelse(toPlot$class_TS_hit == 0,-.05,NA)                           # index classificaiton errors
+toPlot$mem_err = ifelse(toPlot$asso_hit == 0,-.15,NA)                           # index classificaiton errors
+smoothed_values <- approx(toPlot$allTrials, toPlot$preceding_RT_deviance, n = 3500) # do some interpolation
+non_smoothed_values <- approx(toPlot$allTrials, toPlot$RT_deviance, n = 3500)       # do some interpolation
+toPlot_smoothed <- data.table(allTrials = smoothed_values$x, smoothed_deviance = smoothed_values$y)             # create new data with smoothed points
+toPlot_unsmoothed <- data.table(allTrials = non_smoothed_values$x, unsmoothed_deviance = non_smoothed_values$y) # create new data with smoothed points
+toPlot2 <- left_join(toPlot_unsmoothed, toPlot_smoothed)                            # join them together
+toPlot2[, zone := ifelse(smoothed_deviance < sub_cutoff, "In", "Out")]              # create in or out of zone variable
+# make zone plot
+ar = 55; ln_size = 1.5; titSiz = 20; axLabSiz = 16; axTicSize = .7; axLinSize = .7; asTxtSize = 10 #; ylinRg = c(8,15);
+p = ggplot(toPlot2, aes(allTrials, smoothed_deviance, col = zone)) + 
+  geom_line(data = toPlot2, aes(allTrials, y = unsmoothed_deviance), inherit.aes = F, color = 'lightgrey') +
+  geom_path(group = 1, size = ln_size) +
+  labs(x  = "Trial Number", y = "Smoothed RT Deviance") +
+  scale_color_manual(breaks = c("In", "Out"), values = c("chartreuse3", "tomato2")) + 
+  geom_point(data = toPlot, aes(allTrials, y = cls_err), inherit.aes = F, color = 'turquoise3', shape = 15, size = ln_size) + 
+  geom_point(data = toPlot, aes(allTrials, y = mem_err), inherit.aes = F, color = 'maroon3', shape = 15, size = ln_size) + 
+  scale_y_continuous(breaks = seq(-.2, 1.6, .1)) +
+  coord_cartesian(ylim = c(-.2, 1)) + 
+  theme(legend.position = 0) + theme_classic() +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize), 
+        axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+        axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+        plot.title = element_text(size = titSiz, hjust = .5), legend.key.size = unit(.5, 'cm'),
+        legend.title = element_text(size=0)) + 
+  ggtitle("Zone Metric Calculation") + theme(legend.position=c(.9,.9)) + coord_fixed(ratio = ar) 
+p
+```
+
+### Zone and classification and memory plot
+
+```{r}
+# prep data with emmeans for class and mem and bind
+class_dat = zone_classification %>% 
+  emmeans("zone_out_esterman", at = list(zone_out_esterman = c(-1 * sd(zoneDat_v3$enc$zone_out_esterman, na.rm = TRUE), 
+                                                                    sd(zoneDat_v3$enc$zone_out_esterman, na.rm = TRUE)))) %>% as.data.frame()
+class_dat$zone_out_esterman <- ifelse(class_dat$zone_out_esterman < 0,"In","Out"); class_dat$dv <- "Classification"
+mem_dat = zone_memory %>% 
+  emmeans("zone_out_esterman", at = list(zone_out_esterman = c(-1 * sd(zoneDat_v3$ret$zone_out_esterman, na.rm = TRUE), 
+                                                                    sd(zoneDat_v3$ret$zone_out_esterman, na.rm = TRUE)))) %>% as.data.frame()
+mem_dat$zone_out_esterman <- ifelse(mem_dat$zone_out_esterman < 0,"In","Out"); mem_dat$dv <- "Memory"
+ERdat = as.data.frame(rbind(class_dat,mem_dat))
+ERdat = data.frame(Zone=ERdat$zone_out_esterman,dv=ERdat$dv,emmean=ERdat$emmean,SE=ERdat$SE,lb_cl=ERdat$asymp.LCL,ub_cl=ERdat$asymp.UCL)
+ERdat$zone <- as.factor(ERdat$Zone); ERdat$dv <- as.factor(ERdat$dv); ERdat$lb_se <- ERdat$emmean-ERdat$SE; ERdat$ub_se <- ERdat$emmean+ERdat$SE 
+# make plot
+tit = "Zone Predicts Performance"; xlab = "Dependent Measure"; ylab = "Marginal Means"; dodge <- position_dodge(width=0.6)
+ln_size = 2;  titSiz = 20; axLabSiz = 15; axTicSize = 1; axLinSize = 1; asTxtSize = 12; ar = 1.5
+ggplot(ERdat, aes(x=dv, y=emmean, color=Zone)) + 
+  geom_point(size=2, position = dodge) + 
+  geom_errorbar(aes(ymin=lb_se, ymax=ub_se), width=0,  size=1, position = dodge) + 
+  theme_classic() + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5)) +  # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) + coord_fixed(ratio = ar) + ylim(c(.6,2)) +
+  scale_color_manual(values = c("chartreuse3", "tomato2")) +
+  annotate("segment", x = .85, xend = 1.15, y = 1.85, yend = 1.85, colour = "black") +
+  annotate("text", x = 1, y = 1.9, label = "*") +
+  annotate("segment", x = 1.85, xend = 2.15, y = 1.15, yend = 1.15, colour = "black") +
+  annotate("text", x = 2, y = 1.2, label = "**")
+
+
+```
+
+### Oscillations in memory based on zone
+
+Run Perm (Optional)
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+files = list.files(perm_path)
+# if the perm dist doesn't already exist
+if (any(files == "zone_memRT_obsSurr.csv") == F){
+  # Run perm on rt
+  zonePerm_mrt = zonePerm_nd(inDat = zoneDat_v3$ret, nPerm = 3000, erTask = "M", dv = "rt", resid = T, seed = 18)
+  # organize and save data
+  obs = as.data.frame(t(unlist(zonePerm_mrt$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_mrt$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_memRT_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+
+```
+
+Get stats
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+# load and use data
+zonePerm_mrt_rd = read.table(paste(perm_path,"zone_memRT_obsSurr.csv",sep=""), header=T)
+zp_mrt_sts = getStats_cd(zonePerm_mrt_rd[2:3001,], as.vector(unlist(zonePerm_mrt_rd["obs",])), hz = 3:14)
+zp_mrt_sts[[2]]
+mkCompSPD_2t_plot_v2(zp_mrt_sts,ylinRg = c(-4,6), ln_size = 1,  
+                              titSiz = 13, axLabSiz = 10, axTicSize = .8, axLinSize = .8, asTxtSize = 8, 
+                              lnColor1 = "chartreuse4",  lnColor2 = "tomato4", titName="Oscillations Modulated by Sustained Attention", 
+                              yAxLab="Spectral Power Difference (AU)", xAxLab="Frequency (Hz)")
+
+# testRes = zoneSOAavg(inDat = zoneDat_v4$ret, erTask = "M", dv = "hr", resid = T, surr = F, msg = F)
+# testRes
+```
+
+### Zone across subjects
+
+```{r}
+# compute across subject zone
+zoneDat_acr_v3 = getZoneMet_rec(EncDat_v3_res, RetDat_v3_res, acrSub = T)
+ZoneEnc = zoneDat_acr_v3$enc
+ZoneEnc$zone_bin <- ifelse(ZoneEnc$zone_out_esterman == -0.5, 1,0)
+pzDat = ZoneEnc %>% group_by(subject) %>% summarize(prop_in_zone = mean(zone_bin, na.rm=T))
+pzDat$subject <- as.character(pzDat$subject)
+IDF_MemHr_dat_pz = left_join(IDF_MemHr_dat,pzDat, by = "subject")
+# make model and plot
+propZoneMod = lm(prop_in_zone ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = IDF_MemHr_dat_pz) # + nicotine*scale(dayTime_shift)
+propZoneMod_df = round(as.matrix(as.data.frame(summary(propZoneMod)['coefficients'])),3)
+write.csv(propZoneMod_df,file=paste(plot_path,"propZoneMod.csv",sep=""))
+# make plot
+# organize data
+plt_pwr_model_pz = lm(prop_in_zone ~ sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat_pz)
+IDF_MemHr_dat_pz$resid <- plt_pwr_model_pz$residuals # add residuals to data
+IDF_MemHr_dat_pz$nicLab <- ifelse(IDF_MemHr_dat_pz$nicotine == 0.5,"Nic","NonNic")
+# plot
+titSiz = 20; axLabSiz = 13; axTicSize = 1; axLinSize = 1; asTxtSize = 10; ylinRg = c(-3.5,6); ln_size = 1; ar = 1.5
+col1 = 'brown4'; col2 = 'sienna2'
+# Nicotine effect
+tit = "Nicotine and Proportion in Zone"; xlab = "Group"; ylab = "Proportion in Zone (resid)" #;color = "maroon3"
+p_nic_pz = ggplot(IDF_MemHr_dat_pz, aes(x=nicLab, y=resid)) + geom_violin(aes(color=nicLab,fill=nicLab), alpha = .4) + 
+  #geom_dotplot(aes(color=nicLab,fill=nicLab), binaxis='y', stackdir='center', size=ln_size) + 
+  geom_jitter(aes(color=nicLab,fill=nicLab), binaxis='y', stackdir='center', size=ln_size, alpha = .7) + 
+  stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange", color="black", size=.7) + 
+  theme_classic() + scale_color_manual(values=c(col1,col2)) + scale_fill_manual(values=c(col1,col2)) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5)) +  # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) + coord_fixed(ratio = ar) + #ylim(c(0,1)) +
+  geom_signif(comparisons = list(c("Nic", "NonNic")), y_position = .5, annotation = c("p=.067"), vjust = .1) +
+  theme(legend.position="none") + geom_hline(yintercept=0, linetype = "dashed", color = "grey")
+p_nic_pz
+```
+
+```{r}
+pwr_model_pz = lm(prop_in_zone ~ nicotine + sex + cannabis + 
+     anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat_pz)
+summary(pwr_model_pz)
+confint(pwr_model_pz, method = "Wald")
+```
+
+
+## Chapter 3 joint plot
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Figure_4", sep=""))) {
+  dir.create(paste(plot_path, "Figure_4", sep=""))
+}
+# extras
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgndTxt = 5
+seg_size = .3; ask_size = 3; pt_size = .3
+# --------------------------- Panel 1 --------------------------------
+ar = 36; #ln_size = 1.5; titSiz = 20; axLabSiz = 16; axTicSize = .7; axLinSize = .7; asTxtSize = 10 #; ylinRg = c(8,15);
+p1 = ggplot(toPlot2, aes(allTrials, smoothed_deviance, col = zone)) + 
+  geom_line(data = toPlot2, aes(allTrials, y = unsmoothed_deviance), inherit.aes = F, color = 'lightgrey') +
+  geom_path(group = 1, size = ln_size) +
+  labs(x  = "Trial Number", y = "Smoothed RT Deviance") +
+  scale_color_manual(breaks = c("In", "Out"), values = c("chartreuse3", "tomato3")) + 
+  geom_point(data = toPlot, aes(allTrials, y = cls_err), inherit.aes = F, color = 'turquoise3', shape = 15, size = ln_size-.2) + 
+  geom_point(data = toPlot, aes(allTrials, y = mem_err), inherit.aes = F, color = 'maroon3', shape = 15, size = ln_size-.2) + 
+  scale_y_continuous(breaks = seq(-.2, 1.6, .2)) +
+  coord_cartesian(ylim = c(-.2, 1)) + 
+  theme(legend.position = 0) + theme_classic() +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize), 
+        axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+        axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+        legend.key.size = unit(lgndU, 'cm'),
+        legend.title = element_blank(), legend.text=element_text(size=lgndTxt),
+        # NHB changes
+        plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), 
+        plot.margin = margin(mp, mp, mp, mp),
+        legend.spacing = unit(1, "pt"),
+        legend.margin = margin(0, 0, 0, 0)) +
+        # NHB changes
+  ggtitle("Zone Metric Calculation") + theme(legend.position=c(.9,.9)) #+ coord_fixed(ratio = ar) 
+p1
+ggsave(paste(plot_path,"Figure_4/fig_4_a.pdf",sep=""), p1,width = 120, height = 40, units = "mm")
+# --------------------------- Panel 2 --------------------------------
+tit = "Performance by Zone"; xlab = "Dependent Measure"; ylab = "Hit Rate (Log Odds)"; dodge <- position_dodge(width=0.6)
+ar = 1.3 #ln_size = 2;  titSiz = 20; axLabSiz = 15; axTicSize = 1; axLinSize = 1; asTxtSize = 12; 
+p2 = ggplot(ERdat, aes(x=dv, y=emmean, color=Zone)) + 
+  geom_point(size= pt_size, position = dodge) + 
+  geom_errorbar(aes(ymin=lb_se, ymax=ub_se), width=0,  size=ln_size, position = dodge) + 
+  theme_classic() + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      legend.position="none",
+      # NHB changes
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), 
+      plot.margin = margin(mp, mp, mp, mp),
+      legend.spacing = unit(1, "pt"),
+      legend.margin = margin(0, 0, 0, 0)) +
+      # NHB changes 
+    labs(y= ylab, x = xlab) + ggtitle(tit) + coord_fixed(ratio = ar) + ylim(c(.85,1.9)) +
+  scale_color_manual(values = c("chartreuse3", "tomato3")) +
+  annotate("segment", x = .85, xend = 1.15, y = 1.85, yend = 1.85, colour = "black",  size= seg_size) +
+  annotate("text", x = 1, y = 1.9, label = "*",  size= ask_size) +
+  annotate("segment", x = 1.85, xend = 2.15, y = 1.15, yend = 1.15, colour = "black",  size= seg_size) +
+  annotate("text", x = 2, y = 1.2, label = "**",  size= ask_size)
+p2
+ggsave(paste(plot_path,"Figure_4/fig_4_b.pdf",sep=""), p2,width = 50, height = 40, units = "mm")
+# --------------------------- Panel 3 --------------------------------
+p3 = mkCompSPD_2t_plot_v2(zp_mrt_sts,ylinRg = c(-3.5,5.7), ln_size = ln_size, fc=fc,
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "chartreuse4",  lnColor2 = "tomato4", titName="Zone and Memory Rhythms", 
+                              yAxLab="RT Power Diff: In-Out", xAxLab="Frequency (Hz)") +
+                                  annotate("segment", x = 4.5, xend = 6.5, y = 5.5, yend = 5.5, colour = "chartreuse4", size=ln_size)
+p3
+ggsave(paste(plot_path,"Figure_4/fig_4_c.pdf",sep=""), p3,width = 60, height = 40, units = "mm")
+# --------------------------- Panel 4 --------------------------------
+col1 = 'brown4'; col2 = 'sienna2'
+# Nicotine effect
+tit = "Nicotine and Memory Rhythms"; xlab = "Group"; ylab = "HR Theta Power (a.u.)" #;color = "maroon3"
+p4 = ggplot(IDF_MemHr_dat, aes(x=nicLab, y=resid)) + 
+  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA) + 
+  geom_jitter(aes(color=nicLab,fill=nicLab), size=sc_pt_sz, alpha = .7, width = 0.2) + 
+  stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange", 
+               color="black", linewidth = .25, size = .15, stroke = 0) + 
+  theme_classic() + scale_color_manual(values=c(col1,col2)) + scale_fill_manual(values=c(col1,col2)) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+        axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+        axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      # NHB changes
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), 
+      plot.margin = margin(mp, mp, mp, mp),
+      legend.spacing = unit(1, "pt"),
+      legend.margin = margin(0, 0, 0, 0)) +
+      # NHB changes  +  # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) + ylim(c(-25,45)) +
+  #geom_signif(comparisons = list(c("Nic", "NonNic")), y_position = 38, annotation = c("*"), vjust = -.1) +
+  annotate("segment", x = 1, xend = 2, y = 39, yend = 39, colour = "black", size = seg_size) +
+  annotate("text", x = 1.5, y = 41, label = "*", size = ask_size) +
+  theme(legend.position="none") + 
+  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-Nicotine") ) + 
+  scale_y_continuous(breaks = seq(-30,40,10)) +
+  labs(x = "Group")
+p4
+ggsave(paste(plot_path,"Figure_4/fig_4_d.pdf",sep=""), p4,width = 50, height = 40, units = "mm")
+# --------------------------- Panel 5 --------------------------------
+col1 = 'brown4'; col2 = 'sienna2'; 
+# Nicotine effect
+tit = "Nicotine and Zone"; xlab = "Group"; ylab = "Proportion in Zone" #;color = "maroon3"
+p5 = ggplot(IDF_MemHr_dat_pz, aes(x=nicLab, y=resid)) + 
+  geom_hline(yintercept=0, linetype = "dashed", color = "grey", size = 0.4, alpha = .5) +
+  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA) + 
+  geom_jitter(aes(color=nicLab,fill=nicLab), , size=sc_pt_sz, alpha = .7, width = 0.2) + 
+  stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange",
+               color="black", linewidth = .25, size = .15, stroke = 0) + 
+  theme_classic() + scale_color_manual(values=c(col1,col2)) + scale_fill_manual(values=c(col1,col2)) + 
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      # NHB changes
+      plot.title = element_text(size = titSiz,  hjust = .5, face=fc, margin = margin(b = 2)), 
+      plot.margin = margin(mp, mp, mp, mp),
+      legend.spacing = unit(1, "pt"),
+      legend.margin = margin(0, 0, 0, 0)) +
+      # NHB changes  
+    labs(y= ylab, x = xlab) + ggtitle(tit) + ylim(c(-.5,.6)) +
+  annotate("segment", x = 1, xend = 2, y = .48, yend = .48, colour = "black", size = seg_size) +
+  annotate("text", x = 1.5, y = .56, label = "p = 0.067", size= 1.5) +
+  theme(legend.position="none")  + 
+  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-Nicotine") ) + 
+  labs(x = "Group")
+p5
+ggsave(paste(plot_path,"Figure_4/fig_4_e.pdf",sep=""), p5,width = 50, height = 40, units = "mm")
+
+```
+
+## Extended Data
+
+### E6: Zone by SOA for other DV's
+
+Run permutation tests and save (optional)
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+files = list.files(perm_path)
+# if the perm dist doesn't already exist
+if (any(files == "zone_memHR_obsSurr.csv") == F){
+  # ----------- for accuracy
+  zonePerm_mhr = zonePerm_nd(inDat = zoneDat_v3$ret, nPerm = 3000, erTask = "M", dv = "hr", resid = T, seed = 18)
+  # organize and save data
+  obs = as.data.frame(t(unlist(zonePerm_mhr$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_mhr$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_memHR_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+if (any(files == "zone_memIES_obsSurr.csv") == F){
+  # ------------- for ies
+  zonePerm_mies = zonePerm_nd(inDat = zoneDat_v3$ret, nPerm = 3000, erTask = "M", dv = "ies", resid = T, seed = 18)
+  # organize and save data
+  obs = as.data.frame(t(unlist(zonePerm_mies$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_mies$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_memIES_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+
+```
+
+Load results
+
+```{r}
+# ----------- for accuracy
+zonePerm_mhr_rd = read.table(paste(perm_path,"zone_memHR_obsSurr.csv",sep=""), header=T)
+zp_mhr_sts = getStats_cd(zonePerm_mhr_rd[2:3001,], as.vector(unlist(zonePerm_mhr_rd["obs",])), hz = 3:14)
+# ------------- for ies
+zonePerm_mies_rd = read.table(paste(perm_path,"zone_memIES_obsSurr.csv",sep=""), header=T)
+zp_mies_sts = getStats_cd(zonePerm_mies_rd[2:3001,], as.vector(unlist(zonePerm_mies_rd["obs",])), hz = 3:14)
+# -------- print results for both
+zp_mhr_sts[[2]]; zp_mies_sts[[2]]
+```
+
+Make supporting plot
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e6", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e6", sep=""))
+}
+# extras
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgndTxt = 5
+seg_size = .3; ask_size = 3; pt_size = .3
+ylinRg = c(-4,4) 
+# ------------------------------ panel 2 --------------------------------------
+p1 = mkCompSPD_2t_plot_v2(zp_mhr_sts,ylinRg = ylinRg, ln_size = ln_size, fc = fc, 
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "chartreuse3",  lnColor2 = "tomato3", titName="Zone and Memory HR", 
+                              yAxLab="Power Diff: In-Out (a.u.)", xAxLab="Frequency (Hz)")
+p1
+ggsave(paste(plot_path,"Fig_e6/Fig_e6_a.pdf",sep=""), p1,width = 45, height = 30, units = "mm")
+# ------------------------------ panel 2 --------------------------------------
+p2 = mkCompSPD_2t_plot_v2(zp_mies_sts,ylinRg = ylinRg, ln_size = ln_size, fc = fc,
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "chartreuse1",  lnColor2 = "tomato1", titName="Zone and Memory IES", 
+                              yAxLab="Power Diff: In-Out (a.u.)", xAxLab="Frequency (Hz)")
+p2
+ggsave(paste(plot_path,"Fig_e6/Fig_e6_b.pdf",sep=""), p2,width = 45, height = 30, units = "mm")
+```
+
+### E7: Supporting plot for classification oscillations
+
+Run perm tests - if not done already
+
+```{r}
+perm_path = paste(master_path,"Distributions/confirmatory_experiment/",sep="")
+files = list.files(perm_path)
+# if the perm dist doesn't already exist
+if (any(files == "zone_clsHR_obsSurr.csv") == F){
+  # ----------------- for accuracy
+  zonePerm_chr = zonePerm_nd(inDat = zoneDat_v3$enc, nPerm = 3000, erTask = "C", dv = "hr", resid = T, seed = 18)
+  obs = as.data.frame(t(unlist(zonePerm_chr$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_chr$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_clsHR_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+if (any(files == "zone_clsRT_obsSurr.csv") == F){
+  # -----------------  for rt
+  zonePerm_crt = zonePerm_nd(inDat = zoneDat_v3$enc, nPerm = 3000, erTask = "C", dv = "rt", resid = T, seed = 18)
+  obs = as.data.frame(t(unlist(zonePerm_crt$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_crt$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_clsRT_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+if (any(files == "zone_clsIES_obsSurr.csv") == F){
+  # -----------------  for ies
+  zonePerm_cies = zonePerm_nd(inDat = zoneDat_v3$enc, nPerm = 3000, erTask = "C", dv = "ies", resid = T, seed = 18)
+  obs = as.data.frame(t(unlist(zonePerm_cies$obs))); colnames(obs) <- paste("hz",3:14,sep="_"); rownames(obs) <- "obs"
+  surr = as.data.frame(zonePerm_cies$surr); colnames(surr) <- paste("hz",3:14,sep="_"); rownames(surr) <- paste("surr",1:3000,sep="_")
+  obsSurr = rbind(obs,surr); write.table(obsSurr, paste(perm_path,"zone_clsIES_obsSurr.csv",sep=""), row.names=TRUE) 
+}
+
+```
+
+Load results
+
+```{r}
+# accuracy 
+zonePerm_chr_rd = read.table(paste(perm_path,"zone_clsHR_obsSurr.csv",sep=""), header=T)
+zp_chr_sts = getStats_cd(zonePerm_chr_rd[2:3001,], as.vector(unlist(zonePerm_chr_rd["obs",])), hz = 3:14)
+# reaction time
+zonePerm_crt_rd = read.table(paste(perm_path,"zone_clsRT_obsSurr.csv",sep=""), header=T)
+zp_crt_sts = getStats_cd(zonePerm_crt_rd[2:3001,], as.vector(unlist(zonePerm_crt_rd["obs",])), hz = 3:14)
+# ies
+zonePerm_cies_rd = read.table(paste(perm_path,"zone_clsIES_obsSurr.csv",sep=""), header=T)
+zp_cies_sts = getStats_cd(zonePerm_cies_rd[2:3001,], as.vector(unlist(zonePerm_cies_rd["obs",])), hz = 3:14)
+# load stats
+zp_chr_sts[[2]]; zp_crt_sts[[2]]; zp_cies_sts[[2]]
+```
+
+Make plots
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e7", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e7", sep=""))
+}
+# extras
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgndTxt = 5
+seg_size = .3; ask_size = 3; pt_size = .3
+ylinRg = c(-4,4) 
+# ------------------------------ panel 1 --------------------------------------
+p1 = mkCompSPD_2t_plot_v2(zp_chr_sts, ylinRg = ylinRg, ln_size = ln_size, fc = fc, 
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "chartreuse3",  lnColor2 = "tomato3", titName="Zone and Class. HR", 
+                              yAxLab="Power Diff: In-Out (a.u.)", xAxLab="Frequency (Hz)")
+ggsave(paste(plot_path,"Fig_e7/Fig_e7_a.pdf",sep=""), p1,width = 40, height = 30, units = "mm")
+# ------------------------------ panel 2 --------------------------------------
+p2 = mkCompSPD_2t_plot_v2(zp_crt_sts, ylinRg = ylinRg, ln_size = ln_size, fc = fc,   
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize,  
+                              lnColor1 = "chartreuse4",  lnColor2 = "tomato4", titName="Zone and Class. RT", 
+                              yAxLab="Power Diff: In-Out (a.u.)", xAxLab="Frequency (Hz)")
+ggsave(paste(plot_path,"Fig_e7/Fig_e7_b.pdf",sep=""), p2,width = 40, height = 30, units = "mm")
+# ------------------------------ panel 3 --------------------------------------
+p3 = mkCompSPD_2t_plot_v2(zp_cies_sts, ylinRg = ylinRg, ln_size = ln_size, fc = fc,   
+                              titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
+                              lnColor1 = "chartreuse1",  lnColor2 = "tomato1", titName="Zone and Class. IES", 
+                              yAxLab="Power Diff: In-Out (a.u.)", xAxLab="Frequency (Hz)")
+ggsave(paste(plot_path,"Fig_e7/Fig_e7_c.pdf",sep=""), p3,width = 40, height = 30, units = "mm")
+```
+
+
+# Added for 1st round of revisions to NHB
+
+### E8: Individual differences in peak frequency
+
+Get histogram of the individualized peak frequencies in theta range across individuals
+
+```{r}
+hr_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "hr", resid = T, fq_rng = c(3:10))
+rt_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "rt", resid = T, fq_rng = c(3:10))
+ies_fft_pf = FFT_IDF(inDat = RetDat_v3_res, erTask = "M", dv = "ies", resid = T, fq_rng = c(3:10))
+```
+
+```{r}
+plot_path = paste(master_path,"Results/",sep="")
+if (!dir.exists(paste(plot_path, "Fig_e8", sep=""))) {
+  dir.create(paste(plot_path, "Fig_e8", sep=""))
+}
+# extras
+titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgndTxt = 5
+yrng = c(0,25)
+# ------------------------ hr ------------------------ 
+tit = "Memory HR"; xlab = "Peak Theta Frequency (Hz)"; ylab = "Count" #;color = "maroon3"
+p1 = ggplot(hr_fft_pf, aes(x = hz)) + geom_histogram(fill = 'maroon3', binwidth = .5) +
+  theme_classic() + scale_x_continuous(breaks = 2:10) + scale_y_continuous(limits = c(0, 22), expand = expansion(mult = c(0, 0.05))) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face = fc), margin = margin(b = 2),
+      plot.margin = margin(mp, mp, mp, mp)) + #ylim(yrng) + 
+    labs(y= ylab, x = xlab) + ggtitle(tit) 
+p1
+ggsave(paste(plot_path,"Fig_e8/Fig_e8_a.pdf",sep=""), p1,width = 35, height = 30, units = "mm")
+# ------------------------ rt ------------------------ 
+tit = "Memory RT"; xlab = "Peak Theta Frequency (Hz)"; ylab = "Count" #;color = "maroon3"
+p2 = ggplot(rt_fft_pf, aes(x = hz)) + geom_histogram(fill = 'maroon4', binwidth = .5) +
+  theme_classic() + scale_x_continuous(breaks = 2:10) + scale_y_continuous(limits = c(0, 22), expand = expansion(mult = c(0, 0.05))) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face = fc), margin = margin(b = 2),
+      plot.margin = margin(mp, mp, mp, mp)) + #ylim(yrng) + # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) 
+p2
+ggsave(paste(plot_path,"Fig_e8/Fig_e8_b.pdf",sep=""), p2,width = 35, height = 30, units = "mm")
+# ies
+tit = "Memory IES"; xlab = "Peak Theta Frequency (Hz)"; ylab = "Count" #;color = "maroon3"
+p3 = ggplot(ies_fft_pf, aes(x = hz)) + geom_histogram(fill = 'maroon1', binwidth = .5) +
+  theme_classic() + scale_x_continuous(breaks = 2:10) + scale_y_continuous(limits = c(0, 22), expand = expansion(mult = c(0, 0.05))) +
+  theme(axis.line = element_line(size = axLinSize), axis.ticks = element_line(size = axTicSize),
+      axis.text.x = element_text(size=asTxtSize), axis.text.y = element_text(size=asTxtSize),
+      axis.title.x = element_text(size = axLabSiz), axis.title.y = element_text(size = axLabSiz),
+      plot.title = element_text(size = titSiz, hjust = .5, face = fc), margin = margin(b = 2),
+      plot.margin = margin(mp, mp, mp, mp)) + #ylim(yrng) + # , color = lnColor
+    labs(y= ylab, x = xlab) + ggtitle(tit) 
+p3
+ggsave(paste(plot_path,"Fig_e8/Fig_e8_c.pdf",sep=""), p3,width = 35, height = 30, units = "mm")
+```
+
+
+
+## Double peak
+
+```{r}
+# high theta 
+high_theta_subs = filter(hr_fft_pf, hz > 6)$subject; print(length(high_theta_subs))
+high_theta_data = filter(RetDat_v4_res, subject %in% high_theta_subs)
+high_theta_soa_data = soa_avg(high_theta_data, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = F, lat = 300)
+high_theta_fft = FFT_grouped(high_theta_soa_data$soaData, dv = "hr")
+high_theta_fft_plt = high_theta_fft$plt + theme_classic() + labs(x = "Freqeuncy (hz)", y = "Power (a.u.)", title = "High Theta Subjects (n=63)") + 
+  theme(plot.title = element_text(face = "bold",hjust = 0.5))
+high_theta_fft_plt
+# low theta
+low_theta_subs = filter(hr_fft_pf, hz < 7)$subject; print(length(low_theta_subs))
+low_theta_data = filter(RetDat_v4_res, subject %in% low_theta_subs)
+low_theta_soa_data = soa_avg(low_theta_data, erTask = "M", dv = "hr", resid = T, rand = F, NArm = T, drp = F, lat = 300)
+low_theta_fft = FFT_grouped(low_theta_soa_data$soaData, dv = "hr")
+low_theta_fft_plt = low_theta_fft$plt + theme_classic() + labs(x = "Freqeuncy (hz)", y = "Power (a.u.)", title = "Low Theta Subjects (n=62)") +
+  theme(plot.title = element_text(face = "bold",hjust = 0.5))
+low_theta_fft_plt
+```
+
+
