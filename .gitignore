@@ -1,0 +1,17 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+.RDataTmp
+
+# User-specific files
+.Ruserdata
+
+# Ignore DS_Store files on macOS
+*.DS_Store
+
+# Ignore Data and Distributions folders
+/Data
+/Distributions
