@@ -45,6 +45,8 @@ rename <- dplyr::rename
 
 ## Load cleaned data
 
+Load cleaned data
+
 ```{r echo = F, include=F}
 data_path = paste(master_path,"Data/Cleaned/postExclude/",sep="")
 for (v in 1:3){
@@ -56,6 +58,15 @@ for (v in 1:3){
 }
 
 ```
+
+Load residuals for confirmatory experiment
+
+```{r}
+resid_path = paste(master_path,"Data/Cleaned/Resid/",sep="")
+EncDat_v3_res = read_csv(paste(resid_path,"EncDat_v3_res.csv",sep=""))
+RetDat_v3_res = read_csv(paste(resid_path,"RetDat_v3_res.csv",sep=""))
+```
+
 
 ## Get exclusion metrics
 
@@ -926,11 +937,13 @@ memHr_phase; memRt_phase; memIes_phase
 
 ```{r}
 AR1_path = paste(master_path,"Data/AR1_control/",sep="")
-AR1_dat = read_csv(paste(AR1_path, "adapted_brooksire_2024_TB2.csv", sep=""))
+AR1_dat = read_csv(paste(AR1_path, "adapted_brooksire_2024_TB5.csv", sep=""))
 AR1_dat$p_raw <- format(AR1_dat$p_raw, scientific=F); AR1_dat$p_corr <- format(AR1_dat$p_corr, scientific=T)
-# AR1_dat$dv = ifelse(AR1_dat$dv == ".D","IES",
-#                     ifelse(AR1_dat$dv == "HR","HR",
-#                            ifelse(AR1_dat$dv == "RT","RT",NA)))
+AR1_dat
+# new 
+AR1_path = paste(master_path,"Data/AR1_control/",sep="")
+AR1_dat = read_csv(paste(AR1_path, "adapted_brooksire_2024_TB6.csv", sep=""))
+AR1_dat$p_raw <- format(AR1_dat$p_raw, scientific=F); AR1_dat$p_corr <- format(AR1_dat$p_corr, scientific=T)
 AR1_dat
 ```
 
@@ -2321,7 +2334,7 @@ plot_path = paste(master_path,"Results/",sep="")
 # for memory 
 memSum = RetDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(asso_hit, na.rm=T), fa = mean(asso_fa, na.rm=T), chr = hr-fa)
 memSum$subject <- as.character(memSum$subject)
-IDF_fac = getIDF_factors(inDat = RetDat_v4_res)
+IDF_fac = getIDF_factors(inDat = RetDat_v3_res)
 sumDat = left_join(memSum,IDF_fac, by= "subject")
 memModel = lm(chr ~ nicotine + sex + cannabis + 
        anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = sumDat)
@@ -2334,7 +2347,7 @@ write.csv(memModDat,file=paste(plot_path,"memPerfMod.csv",sep=""))
 # for classification
 clsSum = EncDat_v3_res %>% group_by(subject) %>% summarize(hr = mean(class_TS_hit, na.rm=T))
 clsSum$subject <- as.character(clsSum$subject)
-IDF_fac = getIDF_factors(inDat = EncDat_v4_res)
+IDF_fac = getIDF_factors(inDat = EncDat_v3_res)
 sumDat = left_join(clsSum,IDF_fac, by= "subject")
 clsModel = lm(hr ~ nicotine + sex + cannabis + 
        anxiety + OCD + PTSD + MDD + dayTime_shift_cent, data = sumDat) 
@@ -2537,10 +2550,16 @@ p_nic_pz
 ```
 
 ```{r}
-pwr_model_pz = lm(prop_in_zone ~ nicotine + sex + cannabis + 
+prop_in_zone_model = lm(prop_in_zone ~ nicotine + sex + cannabis + 
      anxiety + OCD + PTSD + MDD + scale(dayTime_shift), data = IDF_MemHr_dat_pz)
-summary(pwr_model_pz)
-confint(pwr_model_pz, method = "Wald")
+summary(prop_in_zone_model)
+confint(prop_in_zone_model, method = "Wald")
+# organize data
+CI = round(confint(prop_in_zone_model, method = "Wald"), 3)
+R2 = round(as.matrix(c(NA,rsq.partial(prop_in_zone_model)$partial.rsq) ), 3)
+prop_in_zone_Dat = round(as.matrix(as.data.frame(summary(prop_in_zone_model)['coefficients'])),3)
+prop_in_zone_Dat = cbind(prop_in_zone_Dat, CI, R2)
+write.csv(prop_in_zone_Dat,file=paste(plot_path,"propZoneMod.csv",sep=""))
 ```
 
 
@@ -2548,21 +2567,22 @@ confint(pwr_model_pz, method = "Wald")
 
 ```{r}
 plot_path = paste(master_path,"Results/",sep="")
-if (!dir.exists(paste(plot_path, "Figure_4", sep=""))) {
-  dir.create(paste(plot_path, "Figure_4", sep=""))
+if (!dir.exists(paste(plot_path, "Fig_4_edit", sep=""))) {
+  dir.create(paste(plot_path, "Fig_4_edit", sep=""))
 }
 # extras
 titSiz = 6; axLabSiz = 5; asTxtSize = 5; axTicSize = .2; axLinSize = .2; ln_size = .5; mp = 4; fc = "plain"; lgndTxt = 5
-seg_size = .3; ask_size = 3; pt_size = .3
+seg_size = .3; ask_size = 3; pt_size = .4
 # --------------------------- Panel 1 --------------------------------
 ar = 36; #ln_size = 1.5; titSiz = 20; axLabSiz = 16; axTicSize = .7; axLinSize = .7; asTxtSize = 10 #; ylinRg = c(8,15);
 p1 = ggplot(toPlot2, aes(allTrials, smoothed_deviance, col = zone)) + 
   geom_line(data = toPlot2, aes(allTrials, y = unsmoothed_deviance), inherit.aes = F, color = 'lightgrey') +
   geom_path(group = 1, size = ln_size) +
-  labs(x  = "Trial Number", y = "Smoothed RT Deviance") +
+  labs(x  = "Trial number", y = "Smoothed RT deviance") +
   scale_color_manual(breaks = c("In", "Out"), values = c("chartreuse3", "tomato3")) + 
   geom_point(data = toPlot, aes(allTrials, y = cls_err), inherit.aes = F, color = 'turquoise3', shape = 15, size = ln_size-.2) + 
   geom_point(data = toPlot, aes(allTrials, y = mem_err), inherit.aes = F, color = 'maroon3', shape = 15, size = ln_size-.2) + 
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
   scale_y_continuous(breaks = seq(-.2, 1.6, .2)) +
   coord_cartesian(ylim = c(-.2, 1)) + 
   theme(legend.position = 0) + theme_classic() +
@@ -2577,11 +2597,11 @@ p1 = ggplot(toPlot2, aes(allTrials, smoothed_deviance, col = zone)) +
         legend.spacing = unit(1, "pt"),
         legend.margin = margin(0, 0, 0, 0)) +
         # NHB changes
-  ggtitle("Zone Metric Calculation") + theme(legend.position=c(.9,.9)) #+ coord_fixed(ratio = ar) 
+  ggtitle("Zone metric calculation") + theme(legend.position=c(.9,.9)) #+ coord_fixed(ratio = ar) 
 p1
-ggsave(paste(plot_path,"Figure_4/fig_4_a.pdf",sep=""), p1,width = 120, height = 40, units = "mm")
+ggsave(paste(plot_path,"Fig_4_edit/fig_4_a.pdf",sep=""), p1,width = 101, height = 35, units = "mm")
 # --------------------------- Panel 2 --------------------------------
-tit = "Performance by Zone"; xlab = "Dependent Measure"; ylab = "Hit Rate (Log Odds)"; dodge <- position_dodge(width=0.6)
+tit = "Performance by zone"; xlab = "Dependent measure"; ylab = "Hit rate (log odds)"; dodge <- position_dodge(width=0.6)
 ar = 1.3 #ln_size = 2;  titSiz = 20; axLabSiz = 15; axTicSize = 1; axLinSize = 1; asTxtSize = 12; 
 p2 = ggplot(ERdat, aes(x=dv, y=emmean, color=Zone)) + 
   geom_point(size= pt_size, position = dodge) + 
@@ -2604,21 +2624,21 @@ p2 = ggplot(ERdat, aes(x=dv, y=emmean, color=Zone)) +
   annotate("segment", x = 1.85, xend = 2.15, y = 1.15, yend = 1.15, colour = "black",  size= seg_size) +
   annotate("text", x = 2, y = 1.2, label = "**",  size= ask_size)
 p2
-ggsave(paste(plot_path,"Figure_4/fig_4_b.pdf",sep=""), p2,width = 50, height = 40, units = "mm")
+ggsave(paste(plot_path,"Fig_4_edit/fig_4_b.pdf",sep=""), p2,width = 50, height = 35, units = "mm")
 # --------------------------- Panel 3 --------------------------------
 p3 = mkCompSPD_2t_plot_v2(zp_mrt_sts,ylinRg = c(-3.5,5.7), ln_size = ln_size, fc=fc,
                               titSiz = titSiz, axLabSiz = axLabSiz, axTicSize = axTicSize, axLinSize = axLinSize, asTxtSize = asTxtSize, 
-                              lnColor1 = "chartreuse4",  lnColor2 = "tomato4", titName="Zone and Memory Rhythms", 
-                              yAxLab="RT Power Diff: In-Out", xAxLab="Frequency (Hz)") +
+                              lnColor1 = "chartreuse4",  lnColor2 = "tomato4", titName="Zone and memory rhythms", 
+                              yAxLab="RT power difference: In-Out", xAxLab="Frequency (Hz)") +
                                   annotate("segment", x = 4.5, xend = 6.5, y = 5.5, yend = 5.5, colour = "chartreuse4", size=ln_size)
 p3
-ggsave(paste(plot_path,"Figure_4/fig_4_c.pdf",sep=""), p3,width = 60, height = 40, units = "mm")
+ggsave(paste(plot_path,"Fig_4_edit/fig_4_c.pdf",sep=""), p3,width = 50, height = 35, units = "mm")
 # --------------------------- Panel 4 --------------------------------
-col1 = 'brown4'; col2 = 'sienna2'
+col1 = 'brown4'; col2 = 'sienna2'; sc_pt_sz = .2
 # Nicotine effect
-tit = "Nicotine and Memory Rhythms"; xlab = "Group"; ylab = "HR Theta Power (a.u.)" #;color = "maroon3"
+tit = "Nicotine and memory rhythms"; xlab = "Group"; ylab = "HR theta power (a.u.)" #;color = "maroon3"
 p4 = ggplot(IDF_MemHr_dat, aes(x=nicLab, y=resid)) + 
-  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA) + 
+  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA, width = 0.6) + 
   geom_jitter(aes(color=nicLab,fill=nicLab), size=sc_pt_sz, alpha = .7, width = 0.2) + 
   stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange", 
                color="black", linewidth = .25, size = .15, stroke = 0) + 
@@ -2637,18 +2657,18 @@ p4 = ggplot(IDF_MemHr_dat, aes(x=nicLab, y=resid)) +
   annotate("segment", x = 1, xend = 2, y = 39, yend = 39, colour = "black", size = seg_size) +
   annotate("text", x = 1.5, y = 41, label = "*", size = ask_size) +
   theme(legend.position="none") + 
-  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-Nicotine") ) + 
+  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-nicotine") ) + 
   scale_y_continuous(breaks = seq(-30,40,10)) +
   labs(x = "Group")
 p4
-ggsave(paste(plot_path,"Figure_4/fig_4_d.pdf",sep=""), p4,width = 50, height = 40, units = "mm")
+ggsave(paste(plot_path,"Fig_4_edit/fig_4_d.pdf",sep=""), p4,width = 50, height = 35, units = "mm")
 # --------------------------- Panel 5 --------------------------------
 col1 = 'brown4'; col2 = 'sienna2'; 
 # Nicotine effect
-tit = "Nicotine and Zone"; xlab = "Group"; ylab = "Proportion in Zone" #;color = "maroon3"
+tit = "Nicotine and zone"; xlab = "Group"; ylab = "Proportion in zone" #;color = "maroon3"
 p5 = ggplot(IDF_MemHr_dat_pz, aes(x=nicLab, y=resid)) + 
   geom_hline(yintercept=0, linetype = "dashed", color = "grey", size = 0.4, alpha = .5) +
-  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA) + 
+  geom_violin(aes(color=nicLab,fill=nicLab), alpha = .3, linewidth = ln_size, color=NA, width = 0.6) + 
   geom_jitter(aes(color=nicLab,fill=nicLab), , size=sc_pt_sz, alpha = .7, width = 0.2) + 
   stat_summary(fun.data=mean_cl_normal, fun.args = list(mult=1),geom="pointrange",
                color="black", linewidth = .25, size = .15, stroke = 0) + 
@@ -2664,12 +2684,12 @@ p5 = ggplot(IDF_MemHr_dat_pz, aes(x=nicLab, y=resid)) +
       # NHB changes  
     labs(y= ylab, x = xlab) + ggtitle(tit) + ylim(c(-.5,.6)) +
   annotate("segment", x = 1, xend = 2, y = .48, yend = .48, colour = "black", size = seg_size) +
-  annotate("text", x = 1.5, y = .56, label = "p = 0.067", size= 1.5) +
+  annotate("text", x = 1.5, y = .56, label = "P = 0.067", size= 1.5) +
   theme(legend.position="none")  + 
-  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-Nicotine") ) + 
+  scale_x_discrete(labels = c("Nic" = "Nicotine", "NonNic" = "Non-nicotine") ) + 
   labs(x = "Group")
 p5
-ggsave(paste(plot_path,"Figure_4/fig_4_e.pdf",sep=""), p5,width = 50, height = 40, units = "mm")
+ggsave(paste(plot_path,"Fig_4_edit/fig_4_e.pdf",sep=""), p5,width = 50, height = 35, units = "mm")
 
 ```
 
