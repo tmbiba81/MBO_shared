@@ -77,6 +77,9 @@ def ARMA_run(dataPath):
     base_name = os.path.splitext(filename)[0]      # 'example_data_file'
     dv_name = base_name.split('_')[1]
     
+    # set seed before running 
+    np.random.seed(42)
+
     # parameters for computing features for each signal
     nsim_exp=3000 #100 # sim for each experiment  # change to 3000 (per participant)
     fs = 30  # sampling frequency in hz
@@ -199,10 +202,10 @@ for f in range(3):
     mat_out['dv'] = out[f]['dv']
     df_out = pd.concat((df_out, mat_out))
 
-df_out.to_csv(os.path.join(output_path, 'adapted_brooksire_2024_TB2.csv'))
+df_out.to_csv(os.path.join(output_path, 'adapted_brooksire_2024_TB6.csv'))
 
 # print "saved to {output_path}"
-print(f"adapted_brooksire_2024_TB2.csv saved to {output_path}")
+print(f"adapted_brooksire_2024_TB6.csv saved to {output_path}")
 
 
 
